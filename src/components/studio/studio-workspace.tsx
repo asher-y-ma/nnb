@@ -65,6 +65,20 @@ import type {
 } from "@/types/studio";
 import { ASPECT_RATIOS, IMAGE_SIZES, PLATFORM_TARGETS } from "@/types/studio";
 
+const SPEED_BUDGET_IMAGE_MODEL = "gemini-3.1-flash-image";
+const HQ_BUDGET_IMAGE_MODEL = "gemini-3.0-pro-image";
+
+const QUALITY_MODE_OPTIONS: Array<{
+  id: QualityMode;
+  label: string;
+  description: string;
+}> = [
+  { id: "speed", label: "默认速度", description: "沿用设置里的默认速度模型" },
+  { id: "speed-budget", label: "速度优惠版", description: SPEED_BUDGET_IMAGE_MODEL },
+  { id: "hq", label: "高质量模式", description: "沿用设置里的高质量模型" },
+  { id: "hq-budget", label: "高质优惠版", description: HQ_BUDGET_IMAGE_MODEL },
+];
+
 const DEFAULT_TONE = "专业但不生硬";
 const DEFAULT_GARMENT_CATEGORY = "上衣";
 const DEFAULT_PLATFORM: PlatformTarget = "通用电商";
@@ -72,6 +86,23 @@ const DEFAULT_PLATFORM: PlatformTarget = "通用电商";
 interface RestoreNotice {
   tone: "success" | "warning";
   message: string;
+}
+
+function resolveImageModelByQualityMode(
+  qualityMode: QualityMode,
+  settings: ReturnType<typeof useSettingsStore.getState>,
+) {
+  switch (qualityMode) {
+    case "speed-budget":
+      return SPEED_BUDGET_IMAGE_MODEL;
+    case "hq":
+      return settings.hqImageModel;
+    case "hq-budget":
+      return HQ_BUDGET_IMAGE_MODEL;
+    case "speed":
+    default:
+      return settings.defaultImageModel;
+  }
 }
 
 function appendNoteSection(currentNotes: string | undefined, nextSection?: string) {
@@ -578,8 +609,7 @@ export function StudioWorkspace({
       tone,
       garmentCategory,
       detailFocusIds,
-      imageModel:
-        qualityMode === "hq" ? settings.hqImageModel : settings.defaultImageModel,
+      imageModel: resolveImageModelByQualityMode(qualityMode, settings),
       textModel: settings.defaultTextModel,
       apiKey: settings.apiKey,
     };
@@ -639,8 +669,7 @@ export function StudioWorkspace({
       tone,
       garmentCategory,
       detailFocusIds,
-      imageModel:
-        qualityMode === "hq" ? settings.hqImageModel : settings.defaultImageModel,
+      imageModel: resolveImageModelByQualityMode(qualityMode, settings),
       textModel: settings.defaultTextModel,
       apiKey: settings.apiKey,
     };
@@ -774,8 +803,7 @@ export function StudioWorkspace({
       tone,
       garmentCategory,
       detailFocusIds,
-      imageModel:
-        qualityMode === "hq" ? settings.hqImageModel : settings.defaultImageModel,
+      imageModel: resolveImageModelByQualityMode(qualityMode, settings),
       textModel: settings.defaultTextModel,
       apiKey: settings.apiKey,
     };
@@ -1314,10 +1342,34 @@ export function StudioWorkspace({
               </div>
             )}
 
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              {QUALITY_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setQualityMode(option.id)}
+                  className={cn(
+                    "rounded-[20px] px-4 py-3 text-left",
+                    qualityMode === option.id
+                      ? "bg-[#17120d] text-[#f9f5ea]"
+                      : "border border-black/10 bg-white text-[#584b37]",
+                  )}
+                >
+                  <p className="text-sm font-medium">{option.label}</p>
+                  <p
+                    className={cn(
+                      "mt-1 text-xs",
+                      qualityMode === option.id ? "text-[#d7ccb1]" : "text-[#7b6b56]",
+                    )}
+                  >
+                    {option.description}
+                  </p>
+                </button>
+              ))}
               <button
                 type="button"
                 onClick={() => setQualityMode("speed")}
+                hidden
                 className={cn(
                   "rounded-full px-4 py-2 text-sm font-medium",
                   qualityMode === "speed"
@@ -1330,6 +1382,7 @@ export function StudioWorkspace({
               <button
                 type="button"
                 onClick={() => setQualityMode("hq")}
+                hidden
                 className={cn(
                   "rounded-full px-4 py-2 text-sm font-medium",
                   qualityMode === "hq"

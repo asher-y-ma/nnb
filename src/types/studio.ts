@@ -64,7 +64,7 @@ export type JobStatus =
   | "failed"
   | "partial";
 
-export type QualityMode = "speed" | "hq";
+export type QualityMode = "speed" | "speed-budget" | "hq" | "hq-budget";
 
 export interface StudioModuleDefinition {
   id: StudioModule;
