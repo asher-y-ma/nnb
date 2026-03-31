@@ -754,6 +754,173 @@ export function StudioWorkspace({
   }
   void handleGenerate;
 
+  async function handleGenerateSafe() {
+    if (!validateBeforeGenerate()) {
+      return;
+    }
+
+    const requestPayload = {
+      module: activeModule,
+      baseUrl: settings.apiBaseUrl,
+      workflowMode,
+      prompt,
+      extraNotes,
+      productFacts,
+      platform,
+      aspectRatio,
+      imageSize,
+      count: activeModule === "detail" ? 1 : count,
+      batchCount,
+      tone,
+      garmentCategory,
+      detailFocusIds,
+      imageModel:
+        qualityMode === "hq" ? settings.hqImageModel : settings.defaultImageModel,
+      textModel: settings.defaultTextModel,
+      apiKey: settings.apiKey,
+    };
+
+    const formData = new FormData();
+    formData.set("payload", JSON.stringify(requestPayload));
+    productImages.forEach((file) => formData.append("productImages[]", file));
+    referenceImages.forEach((file) => formData.append("referenceImages[]", file));
+    sourceImages.forEach((file) => formData.append("sourceImages[]", file));
+    modelImages.forEach((file) => formData.append("modelImages[]", file));
+    innerLayerImages.forEach((file) => formData.append("innerLayerImages[]", file));
+
+    setResult(null);
+    setGenerationTotals(null);
+    setLightboxIndex(null);
+    setIsGenerating(true);
+
+    try {
+      let completedJob: StudioJobResult | null = null;
+      let serverSideError: Error | null = null;
+
+      try {
+        const streamResponse = await fetch("/api/generate", {
+          method: "POST",
+          headers: {
+            "x-response-mode": "stream",
+          },
+          body: formData,
+        });
+
+        if (!streamResponse.ok) {
+          const payload = (await streamResponse.json().catch(() => null)) as
+            | (GenerateStudioResponse & { error?: string })
+            | null;
+          throw new Error(payload?.error ?? "生成失败");
+        }
+
+        await readStreamEvents(streamResponse, async (event) => {
+          if (event.type === "started") {
+            setGenerationTotals(event.totals);
+            setResult({
+              ...event.job,
+              prompt: "",
+              notes: "",
+              images: [],
+              copyResults: [],
+            });
+            return;
+          }
+
+          if (event.type === "analysis") {
+            setGenerationTotals(event.totals);
+            setResult((current) =>
+              current
+                ? {
+                    ...current,
+                    prompt: event.prompt,
+                    notes: appendNoteSection(current.notes, event.notes),
+                  }
+                : current,
+            );
+            return;
+          }
+
+          if (event.type === "image") {
+            setGenerationTotals(event.totals);
+            setResult((current) =>
+              current
+                ? {
+                    ...current,
+                    notes: appendNoteSection(current.notes, event.notesDelta),
+                    images: [...current.images, event.image],
+                  }
+                : current,
+            );
+            return;
+          }
+
+          if (event.type === "copy") {
+            setGenerationTotals(event.totals);
+            setResult((current) =>
+              current
+                ? {
+                    ...current,
+                    copyResults: [...(current.copyResults ?? []), event.copyResult],
+                  }
+                : current,
+            );
+            return;
+          }
+
+          if (event.type === "complete") {
+            completedJob = event.job;
+            setGenerationTotals(event.totals);
+            setResult(event.job);
+            return;
+          }
+
+          serverSideError = new Error(event.error);
+          throw serverSideError;
+        });
+      } catch (streamError) {
+        if (serverSideError) {
+          throw serverSideError;
+        }
+
+        setResult(null);
+        setGenerationTotals(null);
+        toast.message("流式响应被服务器或反向代理截断，已自动切换为普通模式。");
+
+        const fallbackResponse = await fetch("/api/generate", {
+          method: "POST",
+          body: formData,
+        });
+
+        const fallbackPayload = (await fallbackResponse.json()) as GenerateStudioResponse & {
+          error?: string;
+        };
+
+        if (!fallbackResponse.ok || !fallbackPayload.ok) {
+          throw new Error(
+            fallbackPayload.error ??
+              (streamError instanceof Error ? streamError.message : "生成失败"),
+          );
+        }
+
+        completedJob = fallbackPayload.job;
+        setResult(fallbackPayload.job);
+      }
+
+      if (!completedJob) {
+        throw new Error("生成未正常完成，请稍后重试。");
+      }
+
+      await persistResult(completedJob);
+      toast.success("生成完成，记得尽快下载结果图。");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "生成失败");
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
+  void handleGenerateStream;
+
   async function handleDownloadAll() {
     if (!deferredResult?.images.length) {
       toast.error("当前没有可下载的图片。");
@@ -1182,7 +1349,7 @@ export function StudioWorkspace({
           <div className="flex flex-col gap-3">
             <button
               type="button"
-              onClick={handleGenerateStream}
+              onClick={handleGenerateSafe}
               disabled={isGenerating}
               className="inline-flex items-center justify-center gap-3 rounded-full bg-[#17120d] px-6 py-4 text-sm font-medium text-[#f9f5ea] transition-opacity hover:opacity-92 disabled:cursor-not-allowed disabled:opacity-60"
             >
