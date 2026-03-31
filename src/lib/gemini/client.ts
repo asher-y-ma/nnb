@@ -1,6 +1,20 @@
 import pLimit from "p-limit";
 
-import { buildCommerceCopyPrompt, buildImagePrompt } from "@/lib/gemini/prompt-builders";
+import {
+  buildCommerceCopyPrompt,
+  buildFashionAnalysisPrompt,
+  buildFashionAnalysisSummary,
+  buildImagePrompt,
+  buildStyleAnalysisPrompt,
+  buildStyleAnalysisSummary,
+  getDetailFocusPresetById,
+  type GarmentReferenceBrief,
+  type StyleReferenceBrief,
+} from "@/lib/gemini/prompt-builders";
+import {
+  DETAIL_FOCUS_PRESETS,
+  FASHION_GARMENT_PRESETS,
+} from "@/lib/studio/workflow-presets";
 import {
   createInlineDataPart,
   createTextPart,
@@ -9,8 +23,17 @@ import {
   extractGeminiParts,
   extractGeminiText,
   geminiGenerateContent,
+  type GeminiRequestPart,
 } from "@/lib/gemini/rest-client";
-import type { CommerceCopyResult, StudioImageResult, StudioModule } from "@/types/studio";
+import type {
+  CommerceCopyResult,
+  DetailFocusId,
+  GenerateStudioStreamEvent,
+  GenerationProgressTotals,
+  PlatformTarget,
+  StudioImageResult,
+  StudioModule,
+} from "@/types/studio";
 
 interface GenerationPayload {
   module: StudioModule;
@@ -18,7 +41,7 @@ interface GenerationPayload {
   prompt: string;
   extraNotes?: string;
   productFacts?: string;
-  platform: string;
+  platform: PlatformTarget;
   aspectRatio: string;
   imageSize: string;
   count: number;
@@ -26,60 +49,149 @@ interface GenerationPayload {
   tone: string;
   garmentCategory?: string;
   workflowMode?: string;
+  detailFocusIds?: DetailFocusId[];
   imageModel: string;
   textModel: string;
   apiKey: string;
 }
 
+interface ImageGenerationPlan {
+  label: string;
+  prompt: string;
+  description?: string;
+}
+
+type ProgressEvent = Extract<
+  GenerateStudioStreamEvent,
+  { type: "analysis" | "image" | "copy" }
+>;
+
+type ProgressTaskOutcome =
+  | {
+      kind: "image";
+      images: StudioImageResult[];
+      notesDelta?: string;
+    }
+  | {
+      kind: "copy";
+      copyResult: CommerceCopyResult;
+    };
+
 const commerceCopySchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    title: {
-      type: "string",
-      description: "平台标题，适合直接发布或微调后发布。",
-    },
-    body: {
-      type: "string",
-      description: "完整带货文案正文。",
-    },
+    title: { type: "string" },
+    body: { type: "string" },
     tags: {
       type: "array",
-      description: "4 到 8 个中文短标签。",
       minItems: 4,
       maxItems: 8,
-      items: {
-        type: "string",
-      },
+      items: { type: "string" },
     },
-    cta: {
-      type: "string",
-      description: "简短直接的行动号召。",
-    },
-    openingLine: {
-      type: "string",
-      description: "短视频或直播开场钩子。",
-    },
+    cta: { type: "string" },
+    openingLine: { type: "string" },
+    coverText: { type: "string" },
     shotList: {
       type: "array",
-      description: "4 到 6 条镜头或分镜描述。",
       minItems: 4,
       maxItems: 6,
-      items: {
-        type: "string",
-      },
+      items: { type: "string" },
     },
     sellingPoints: {
       type: "array",
-      description: "3 到 5 条核心卖点。",
       minItems: 3,
       maxItems: 5,
+      items: { type: "string" },
+    },
+    storyboard: {
+      type: "array",
+      minItems: 4,
+      maxItems: 6,
       items: {
-        type: "string",
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string" },
+          direction: { type: "string" },
+          visualPrompt: { type: "string" },
+          overlayText: { type: "string" },
+        },
+        required: ["title", "direction", "visualPrompt", "overlayText"],
       },
     },
   },
-  required: ["title", "body", "tags", "cta", "openingLine", "shotList", "sellingPoints"],
+  required: [
+    "title",
+    "body",
+    "tags",
+    "cta",
+    "openingLine",
+    "coverText",
+    "shotList",
+    "sellingPoints",
+    "storyboard",
+  ],
+} as const;
+
+const styleAnalysisSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    summary: { type: "string" },
+    palette: {
+      type: "array",
+      minItems: 3,
+      maxItems: 6,
+      items: { type: "string" },
+    },
+    lighting: { type: "string" },
+    composition: { type: "string" },
+    background: { type: "string" },
+    mood: { type: "string" },
+    typography: { type: "string" },
+    preserve: {
+      type: "array",
+      minItems: 3,
+      maxItems: 6,
+      items: { type: "string" },
+    },
+    avoid: {
+      type: "array",
+      minItems: 3,
+      maxItems: 6,
+      items: { type: "string" },
+    },
+  },
+  required: [
+    "summary",
+    "palette",
+    "lighting",
+    "composition",
+    "background",
+    "mood",
+    "typography",
+    "preserve",
+    "avoid",
+  ],
+} as const;
+
+const fashionAnalysisSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    category: { type: "string" },
+    silhouette: { type: "string" },
+    fabric: { type: "string" },
+    styling: { type: "string" },
+    preserve: {
+      type: "array",
+      minItems: 4,
+      maxItems: 8,
+      items: { type: "string" },
+    },
+  },
+  required: ["category", "silhouette", "fabric", "styling", "preserve"],
 } as const;
 
 async function fileToInlinePart(file: File) {
@@ -91,12 +203,178 @@ async function fileToInlinePart(file: File) {
   });
 }
 
-function normalizeJsonText(input: string) {
-  return input.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "").trim();
+async function createLabeledImageParts(files: File[], label: string) {
+  if (!files.length) {
+    return [] as GeminiRequestPart[];
+  }
+
+  const imageParts = await Promise.all(files.map((file) => fileToInlinePart(file)));
+  return [createTextPart(label), ...imageParts];
 }
 
-export async function generateStudioAssets({
+function normalizeJsonText(input: string) {
+  return input
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+}
+
+function parseJsonObject<T>(input: string, fallback: T) {
+  try {
+    return JSON.parse(normalizeJsonText(input || "")) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function isCommerceCopyOnly(payload: GenerationPayload) {
+  return (
+    payload.module === "commerce" &&
+    (payload.workflowMode === "批量文案" || payload.workflowMode === "视频预备")
+  );
+}
+
+export function getGenerationTotals(payload: GenerationPayload): GenerationProgressTotals {
+  const imageTotal =
+    payload.module === "detail"
+      ? Math.max(1, payload.detailFocusIds?.length ?? 0)
+      : isCommerceCopyOnly(payload)
+        ? 0
+        : clamp(payload.count, 1, 4);
+
+  const copyTotal =
+    payload.module === "commerce" ? clamp(payload.batchCount, 1, 5) : 0;
+
+  return {
+    images: imageTotal,
+    copyResults: copyTotal,
+  };
+}
+
+async function analyzeStyleReference({
   payload,
+  referenceImages,
+}: {
+  payload: GenerationPayload;
+  referenceImages: File[];
+}) {
+  if (payload.module !== "style-clone" || referenceImages.length === 0) {
+    return null;
+  }
+
+  try {
+    const analysisResponse = await geminiGenerateContent({
+      baseUrl: payload.baseUrl,
+      apiKey: payload.apiKey,
+      model: payload.textModel,
+      body: {
+        contents: [
+          createUserContent([
+            createTextPart(buildStyleAnalysisPrompt(payload.workflowMode)),
+            ...(await createLabeledImageParts(
+              referenceImages,
+              "下面这些图片全部是风格参考图。只分析布光、构图、背景、色彩、情绪和排版氛围，不要分析它们是什么商品。",
+            )),
+          ]),
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseJsonSchema: styleAnalysisSchema,
+        },
+      },
+    });
+
+    const parsed = parseJsonObject<StyleReferenceBrief>(extractGeminiText(analysisResponse), {
+      summary: "延续参考图的整体视觉语言和品牌氛围。",
+      palette: [],
+      lighting: "",
+      composition: "",
+      background: "",
+      mood: "",
+      typography: "",
+      preserve: [],
+      avoid: [],
+    });
+
+    return {
+      summary: parsed.summary?.trim() || "延续参考图的整体视觉语言和品牌氛围。",
+      palette: parsed.palette?.filter(Boolean).slice(0, 6) ?? [],
+      lighting: parsed.lighting?.trim() || "",
+      composition: parsed.composition?.trim() || "",
+      background: parsed.background?.trim() || "",
+      mood: parsed.mood?.trim() || "",
+      typography: parsed.typography?.trim() || "",
+      preserve: parsed.preserve?.filter(Boolean).slice(0, 6) ?? [],
+      avoid: parsed.avoid?.filter(Boolean).slice(0, 6) ?? [],
+    } satisfies StyleReferenceBrief;
+  } catch {
+    return null;
+  }
+}
+
+async function analyzeGarmentReference({
+  payload,
+  productImages,
+}: {
+  payload: GenerationPayload;
+  productImages: File[];
+}) {
+  if (payload.module !== "fashion" || productImages.length === 0) {
+    return null;
+  }
+
+  try {
+    const analysisResponse = await geminiGenerateContent({
+      baseUrl: payload.baseUrl,
+      apiKey: payload.apiKey,
+      model: payload.textModel,
+      body: {
+        contents: [
+          createUserContent([
+            createTextPart(
+              buildFashionAnalysisPrompt(payload.garmentCategory, payload.workflowMode),
+            ),
+            ...(await createLabeledImageParts(
+              productImages.slice(0, 1),
+              "下面是目标服装图，请提炼试穿时必须保护的版型、长度、印花、颜色和结构。",
+            )),
+          ]),
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseJsonSchema: fashionAnalysisSchema,
+        },
+      },
+    });
+
+    const parsed = parseJsonObject<GarmentReferenceBrief>(extractGeminiText(analysisResponse), {
+      category: payload.garmentCategory || "服装单品",
+      silhouette: "",
+      fabric: "",
+      styling: "",
+      preserve: [],
+    });
+
+    return {
+      category: parsed.category?.trim() || payload.garmentCategory || "服装单品",
+      silhouette: parsed.silhouette?.trim() || "",
+      fabric: parsed.fabric?.trim() || "",
+      styling: parsed.styling?.trim() || "",
+      preserve: parsed.preserve?.filter(Boolean).slice(0, 8) ?? [],
+    } satisfies GarmentReferenceBrief;
+  } catch {
+    return null;
+  }
+}
+
+async function buildImageInputParts({
+  payload,
+  planPrompt,
   productImages,
   referenceImages,
   sourceImages,
@@ -104,62 +382,253 @@ export async function generateStudioAssets({
   innerLayerImages,
 }: {
   payload: GenerationPayload;
+  planPrompt: string;
   productImages: File[];
   referenceImages: File[];
   sourceImages: File[];
   modelImages: File[];
   innerLayerImages: File[];
 }) {
-  const shouldGenerateImages = !(
-    payload.module === "commerce" &&
-    (payload.workflowMode === "批量文案" || payload.workflowMode === "视频预备")
+  const parts: GeminiRequestPart[] = [createTextPart(planPrompt)];
+
+  if (payload.module === "style-clone") {
+    parts.push(
+      ...(await createLabeledImageParts(
+        productImages,
+        "第一组图片是产品图，是唯一主体来源。最终商品必须来自这组图片，保留它的形态、材质、logo、印花、颜色和关键结构。",
+      )),
+    );
+    parts.push(
+      ...(await createLabeledImageParts(
+        referenceImages,
+        "第二组图片是风格参考图，只能借鉴布光、背景、构图、色彩和镜头语言。禁止直接复用这组图里的主体、包装、道具、人物或主版式。",
+      )),
+    );
+
+    return parts;
+  }
+
+  if (payload.module === "fashion") {
+    parts.push(
+      ...(await createLabeledImageParts(
+        productImages,
+        "第一组图片是目标服装图，必须保留版型、长度、印花、颜色、logo 和关键结构。",
+      )),
+    );
+
+    if (modelImages.length) {
+      parts.push(
+        ...(await createLabeledImageParts(
+          modelImages,
+          "第二组图片是模特图，请保留模特身份、脸部、发型、肤色和基本姿态，只调整服装穿着关系。",
+        )),
+      );
+    }
+
+    if (innerLayerImages.length) {
+      parts.push(
+        ...(await createLabeledImageParts(
+          innerLayerImages,
+          "第三组图片是内搭参考图，只用于处理层次和遮挡关系，不要让内搭盖过目标服装。",
+        )),
+      );
+    }
+
+    return parts;
+  }
+
+  if (payload.module === "retouch") {
+    parts.push(
+      ...(await createLabeledImageParts(
+        sourceImages,
+        "下面是待精修源图。优先保留主体，只做用户点名的局部修正。",
+      )),
+    );
+
+    return parts;
+  }
+
+  parts.push(
+    ...(await createLabeledImageParts(
+      productImages,
+      "下面是产品图。最终画面必须以这些产品图为主体来源。",
+    )),
   );
-  const imagePrompt = buildImagePrompt({
-    module: payload.module,
-    prompt: payload.prompt,
-    extraNotes: payload.extraNotes,
-    productFacts: payload.productFacts,
-    platform: payload.platform as never,
-    aspectRatio: payload.aspectRatio,
-    garmentCategory: payload.garmentCategory,
-    workflowMode: payload.workflowMode,
-    hasModelImage: modelImages.length > 0,
-    hasInnerLayerImage: innerLayerImages.length > 0,
-  });
 
-  const relevantFiles =
-    payload.module === "retouch"
-      ? sourceImages
-      : [...productImages, ...referenceImages, ...modelImages, ...innerLayerImages];
+  if (referenceImages.length) {
+    parts.push(
+      ...(await createLabeledImageParts(
+        referenceImages,
+        "下面是辅助参考图，只能借鉴局部氛围、布光或构图，不得替换主体。",
+      )),
+    );
+  }
 
-  const parts = [
-    createTextPart(imagePrompt),
-    ...(await Promise.all(relevantFiles.map((file) => fileToInlinePart(file)))),
-  ];
+  return parts;
+}
 
-  let images: StudioImageResult[] = [];
-  let notes = "";
+function createImagePlans({
+  payload,
+  styleBrief,
+  garmentBrief,
+}: {
+  payload: GenerationPayload;
+  styleBrief: StyleReferenceBrief | null;
+  garmentBrief: GarmentReferenceBrief | null;
+}) {
+  if (payload.module === "detail") {
+    const selectedPresets =
+      payload.detailFocusIds
+        ?.map((id) => getDetailFocusPresetById(id))
+        .filter((preset): preset is NonNullable<typeof preset> => Boolean(preset)) ?? [];
 
-  if (shouldGenerateImages) {
-    const imageResponse = await geminiGenerateContent({
-      baseUrl: payload.baseUrl,
-      apiKey: payload.apiKey,
-      model: payload.imageModel,
-      body: {
-        contents: [createUserContent(parts)],
-        generationConfig: {
-          candidateCount: Math.min(4, Math.max(1, payload.count)),
-          responseModalities: ["TEXT", "IMAGE"],
-          imageConfig: {
-            aspectRatio: payload.aspectRatio,
-            imageSize: payload.imageSize,
-          },
+    const presets = selectedPresets.length ? selectedPresets : DETAIL_FOCUS_PRESETS.slice(0, 1);
+
+    return presets.map((preset) => ({
+      label: preset.label,
+      description: preset.description,
+      prompt: buildImagePrompt({
+        module: payload.module,
+        prompt: payload.prompt,
+        extraNotes: payload.extraNotes,
+        productFacts: payload.productFacts,
+        platform: payload.platform,
+        aspectRatio: payload.aspectRatio,
+        workflowMode: payload.workflowMode,
+        detailFocus: preset,
+      }),
+    }));
+  }
+
+  const fashionLabel =
+    payload.module === "fashion"
+      ? FASHION_GARMENT_PRESETS.find(
+          (preset) =>
+            preset.label === payload.garmentCategory ||
+            preset.id === payload.garmentCategory,
+        )?.label ?? payload.garmentCategory
+      : undefined;
+
+  const baseLabel =
+    payload.module === "fashion"
+      ? `${payload.workflowMode || "服装生成"} · ${fashionLabel || "服装"}`
+      : payload.workflowMode || "生成结果";
+
+  const description =
+    payload.module === "style-clone" && styleBrief
+      ? styleBrief.summary
+      : payload.module === "fashion" && garmentBrief
+        ? garmentBrief.preserve.join("、")
+        : undefined;
+
+  const planCount = clamp(payload.count, 1, 4);
+
+  return Array.from({ length: planCount }, (_, index) => ({
+    label: planCount > 1 ? `${baseLabel} ${index + 1}` : baseLabel,
+    description,
+    prompt: buildImagePrompt({
+      module: payload.module,
+      prompt: payload.prompt,
+      extraNotes: payload.extraNotes,
+      productFacts: payload.productFacts,
+      platform: payload.platform,
+      aspectRatio: payload.aspectRatio,
+      garmentCategory: payload.garmentCategory,
+      workflowMode: payload.workflowMode,
+      hasModelImage: false,
+      hasInnerLayerImage: false,
+      styleBrief,
+      garmentBrief,
+    }),
+  }));
+}
+
+function buildPromptBundle(plans: ImageGenerationPlan[]) {
+  return plans.map((plan) => `【${plan.label}】\n${plan.prompt}`).join("\n\n");
+}
+
+function createInitialNoteSections({
+  payload,
+  styleBrief,
+  garmentBrief,
+}: {
+  payload: GenerationPayload;
+  styleBrief: StyleReferenceBrief | null;
+  garmentBrief: GarmentReferenceBrief | null;
+}) {
+  const sections: string[] = [];
+
+  if (payload.module === "style-clone" && styleBrief) {
+    sections.push(buildStyleAnalysisSummary(styleBrief));
+  }
+
+  if (payload.module === "fashion" && garmentBrief) {
+    sections.push(buildFashionAnalysisSummary(garmentBrief));
+  }
+
+  if (payload.module === "detail" && payload.detailFocusIds?.length) {
+    const labels = payload.detailFocusIds
+      .map((id) => getDetailFocusPresetById(id)?.label)
+      .filter(Boolean)
+      .join("、");
+
+    if (labels) {
+      sections.push(`本次会按以下详情主题分别出图：${labels}`);
+    }
+  }
+
+  return sections;
+}
+
+async function generateSingleImagePlan({
+  payload,
+  plan,
+  productImages,
+  referenceImages,
+  sourceImages,
+  modelImages,
+  innerLayerImages,
+}: {
+  payload: GenerationPayload;
+  plan: ImageGenerationPlan;
+  productImages: File[];
+  referenceImages: File[];
+  sourceImages: File[];
+  modelImages: File[];
+  innerLayerImages: File[];
+}) {
+  const imageResponse = await geminiGenerateContent({
+    baseUrl: payload.baseUrl,
+    apiKey: payload.apiKey,
+    model: payload.imageModel,
+    body: {
+      contents: [
+        createUserContent(
+          await buildImageInputParts({
+            payload,
+            planPrompt: plan.prompt,
+            productImages,
+            referenceImages,
+            sourceImages,
+            modelImages,
+            innerLayerImages,
+          }),
+        ),
+      ],
+      generationConfig: {
+        candidateCount: 1,
+        responseModalities: ["TEXT", "IMAGE"],
+        imageConfig: {
+          aspectRatio: payload.aspectRatio,
+          imageSize: payload.imageSize,
         },
       },
-    });
+    },
+  });
 
-    const responseParts = extractGeminiParts(imageResponse);
-    images = responseParts.reduce<StudioImageResult[]>((collection, part, index) => {
+  const notesDelta = extractGeminiText(imageResponse).trim();
+  const images = extractGeminiParts(imageResponse).reduce<StudioImageResult[]>(
+    (collection, part, index) => {
       const inlineData = extractGeminiInlineData(part);
       if (!inlineData?.data) {
         return collection;
@@ -169,69 +638,276 @@ export async function generateStudioAssets({
         id: crypto.randomUUID(),
         mimeType: inlineData.mimeType,
         base64Data: inlineData.data,
-        caption: `result-${index + 1}`,
+        caption: collection.length > 0 ? `${plan.label} ${index + 1}` : plan.label,
+        description: plan.description,
       });
 
       return collection;
-    }, []);
+    },
+    [],
+  );
 
-    notes = extractGeminiText(imageResponse);
+  return {
+    images,
+    notesDelta: notesDelta || undefined,
+  };
+}
+
+async function generateSingleCopyResult({
+  payload,
+  variantIndex,
+}: {
+  payload: GenerationPayload;
+  variantIndex: number;
+}) {
+  const copyResponse = await geminiGenerateContent({
+    baseUrl: payload.baseUrl,
+    apiKey: payload.apiKey,
+    model: payload.textModel,
+    body: {
+      contents: [
+        createUserContent([
+          createTextPart(
+            buildCommerceCopyPrompt({
+              platform: payload.platform,
+              tone: payload.tone,
+              productFacts: payload.productFacts,
+              prompt: payload.prompt,
+              variantIndex,
+              workflowMode: payload.workflowMode,
+            }),
+          ),
+        ]),
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseJsonSchema: commerceCopySchema,
+      },
+    },
+  });
+
+  const parsed = parseJsonObject<{
+    title?: string;
+    body?: string;
+    tags?: string[];
+    cta?: string;
+    openingLine?: string;
+    coverText?: string;
+    shotList?: string[];
+    sellingPoints?: string[];
+    storyboard?: Array<{
+      title?: string;
+      direction?: string;
+      visualPrompt?: string;
+      overlayText?: string;
+    }>;
+  }>(extractGeminiText(copyResponse), {});
+
+  return {
+    id: crypto.randomUUID(),
+    platform: payload.platform,
+    title: parsed.title?.trim() || `带货标题 ${variantIndex}`,
+    body: parsed.body?.trim() || "",
+    tags: parsed.tags?.filter(Boolean).slice(0, 8) ?? [],
+    cta: parsed.cta?.trim() || "点击了解更多",
+    openingLine: parsed.openingLine?.trim(),
+    coverText: parsed.coverText?.trim(),
+    shotList: parsed.shotList?.filter(Boolean).slice(0, 6) ?? [],
+    sellingPoints: parsed.sellingPoints?.filter(Boolean).slice(0, 5) ?? [],
+    storyboard:
+      parsed.storyboard
+        ?.filter((frame) => frame?.title || frame?.direction || frame?.visualPrompt)
+        .slice(0, 6)
+        .map((frame) => ({
+          title: frame.title?.trim() || "镜头",
+          direction: frame.direction?.trim() || "",
+          visualPrompt: frame.visualPrompt?.trim() || "",
+          overlayText: frame.overlayText?.trim(),
+        })) ?? [],
+  } satisfies CommerceCopyResult;
+}
+
+async function emitInCompletionOrder<T>(
+  tasks: Array<Promise<T>>,
+  onResult: (result: T) => Promise<void> | void,
+) {
+  const pending = new Map(
+    tasks.map((task, index) => [
+      index,
+      task.then((value) => ({
+        index,
+        value,
+      })),
+    ]),
+  );
+
+  while (pending.size > 0) {
+    const settled = await Promise.race(pending.values());
+    pending.delete(settled.index);
+    await onResult(settled.value);
   }
+}
 
-  let copyResults: CommerceCopyResult[] = [];
+export async function generateStudioAssets({
+  payload,
+  productImages,
+  referenceImages,
+  sourceImages,
+  modelImages,
+  innerLayerImages,
+  onProgress,
+}: {
+  payload: GenerationPayload;
+  productImages: File[];
+  referenceImages: File[];
+  sourceImages: File[];
+  modelImages: File[];
+  innerLayerImages: File[];
+  onProgress?: (event: ProgressEvent) => Promise<void> | void;
+}) {
+  const totals = getGenerationTotals(payload);
+  const shouldGenerateImages = totals.images > 0;
 
-  if (payload.module === "commerce") {
-    const limit = pLimit(5);
+  const styleBrief = await analyzeStyleReference({
+    payload,
+    referenceImages,
+  });
 
-    copyResults = await Promise.all(
-      Array.from({ length: Math.min(5, Math.max(1, payload.batchCount)) }).map(
-        (_, index) =>
-          limit(async () => {
-            const copyResponse = await geminiGenerateContent({
-              baseUrl: payload.baseUrl,
-              apiKey: payload.apiKey,
-              model: payload.textModel,
-              body: {
-                contents: [createUserContent([createTextPart(buildCommerceCopyPrompt({
-                  platform: payload.platform as never,
-                  tone: payload.tone,
-                  productFacts: payload.productFacts,
+  const garmentBrief = await analyzeGarmentReference({
+    payload,
+    productImages,
+  });
+
+  const plans = shouldGenerateImages
+    ? createImagePlans({
+        payload,
+        styleBrief,
+        garmentBrief,
+      }).map((plan) => ({
+        ...plan,
+        prompt:
+          payload.module === "fashion"
+            ? buildImagePrompt({
+                module: payload.module,
+                prompt: payload.prompt,
+                extraNotes: payload.extraNotes,
+                productFacts: payload.productFacts,
+                platform: payload.platform,
+                aspectRatio: payload.aspectRatio,
+                garmentCategory: payload.garmentCategory,
+                workflowMode: payload.workflowMode,
+                hasModelImage: modelImages.length > 0,
+                hasInnerLayerImage: innerLayerImages.length > 0,
+                garmentBrief,
+              })
+            : payload.module === "style-clone"
+              ? buildImagePrompt({
+                  module: payload.module,
                   prompt: payload.prompt,
-                  variantIndex: index + 1,
+                  extraNotes: payload.extraNotes,
+                  productFacts: payload.productFacts,
+                  platform: payload.platform,
+                  aspectRatio: payload.aspectRatio,
                   workflowMode: payload.workflowMode,
-                }))])],
-                generationConfig: {
-                  responseMimeType: "application/json",
-                  responseJsonSchema: commerceCopySchema,
-                },
-              },
-            });
+                  styleBrief,
+                })
+              : plan.prompt,
+      }))
+    : [];
 
-            const parsed = JSON.parse(normalizeJsonText(extractGeminiText(copyResponse) || "{}")) as {
-              title?: string;
-              body?: string;
-              tags?: string[];
-              cta?: string;
-              openingLine?: string;
-              shotList?: string[];
-              sellingPoints?: string[];
-            };
+  const promptBundle = buildPromptBundle(plans);
+  const noteSections = createInitialNoteSections({
+    payload,
+    styleBrief,
+    garmentBrief,
+  });
 
-            return {
-              id: crypto.randomUUID(),
-              platform: payload.platform as never,
-              title: parsed.title?.trim() || `带货标题 ${index + 1}`,
-              body: parsed.body?.trim() || "",
-              tags: parsed.tags?.filter(Boolean).slice(0, 8) ?? [],
-              cta: parsed.cta?.trim() || "点击了解更多",
-              openingLine: parsed.openingLine?.trim(),
-              shotList: parsed.shotList?.filter(Boolean).slice(0, 6) ?? [],
-              sellingPoints: parsed.sellingPoints?.filter(Boolean).slice(0, 5) ?? [],
-            };
-          }),
-      ),
+  await onProgress?.({
+    type: "analysis",
+    notes: noteSections.filter(Boolean).join("\n\n") || undefined,
+    prompt: promptBundle,
+    totals,
+  });
+
+  const images: StudioImageResult[] = [];
+  const copyResults: CommerceCopyResult[] = [];
+  const tasks: Array<Promise<ProgressTaskOutcome>> = [];
+  const imageLimit = pLimit(payload.module === "detail" ? 2 : 3);
+  const copyLimit = pLimit(5);
+
+  for (const plan of plans) {
+    tasks.push(
+      imageLimit(async () => {
+        const result = await generateSingleImagePlan({
+          payload,
+          plan,
+          productImages,
+          referenceImages,
+          sourceImages,
+          modelImages,
+          innerLayerImages,
+        });
+
+        return {
+          kind: "image",
+          images: result.images,
+          notesDelta: result.notesDelta,
+        } satisfies ProgressTaskOutcome;
+      }),
     );
   }
+
+  if (payload.module === "commerce") {
+    for (let index = 0; index < totals.copyResults; index += 1) {
+      tasks.push(
+        copyLimit(async () => {
+          const copyResult = await generateSingleCopyResult({
+            payload,
+            variantIndex: index + 1,
+          });
+
+          return {
+            kind: "copy",
+            copyResult,
+          } satisfies ProgressTaskOutcome;
+        }),
+      );
+    }
+  }
+
+  let emittedImageCount = 0;
+  let emittedCopyCount = 0;
+
+  await emitInCompletionOrder(tasks, async (task) => {
+    if (task.kind === "image") {
+      if (task.notesDelta) {
+        noteSections.push(task.notesDelta);
+      }
+
+      for (const image of task.images) {
+        images.push(image);
+        emittedImageCount += 1;
+        await onProgress?.({
+          type: "image",
+          image,
+          imageIndex: emittedImageCount,
+          totals,
+          notesDelta: task.notesDelta,
+        });
+      }
+
+      return;
+    }
+
+    copyResults.push(task.copyResult);
+    emittedCopyCount += 1;
+    await onProgress?.({
+      type: "copy",
+      copyResult: task.copyResult,
+      copyIndex: emittedCopyCount,
+      totals,
+    });
+  });
 
   if (shouldGenerateImages && images.length === 0) {
     throw new Error("Gemini 未返回图片结果，请调整提示词、检查模型能力或稍后重试。");
@@ -239,8 +915,9 @@ export async function generateStudioAssets({
 
   return {
     images,
-    notes,
+    notes: noteSections.filter(Boolean).join("\n\n"),
     copyResults,
-    prompt: imagePrompt,
+    prompt: promptBundle,
+    totals,
   };
 }

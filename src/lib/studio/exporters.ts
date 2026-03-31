@@ -66,6 +66,10 @@ export function buildCopyTextBundle(title: string, copyResults: CommerceCopyResu
         `标题：${copyItem.title}`,
       ];
 
+      if (copyItem.coverText) {
+        sections.push(`封面文案：${copyItem.coverText}`);
+      }
+
       if (copyItem.openingLine) {
         sections.push(`开场钩子：${copyItem.openingLine}`);
       }
@@ -85,6 +89,17 @@ export function buildCopyTextBundle(title: string, copyResults: CommerceCopyResu
           `视频预备分镜：\n${copyItem.shotList
             .map((shot, shotIndex) => `${shotIndex + 1}. ${shot}`)
             .join("\n")}`,
+        );
+      }
+
+      if (copyItem.storyboard?.length) {
+        sections.push(
+          `Storyboard：\n${copyItem.storyboard
+            .map(
+              (frame, frameIndex) =>
+                `${frameIndex + 1}. ${frame.title}\n镜头：${frame.direction}\n视觉提示：${frame.visualPrompt}${frame.overlayText ? `\n叠字：${frame.overlayText}` : ""}`,
+            )
+            .join("\n\n")}`,
         );
       }
 

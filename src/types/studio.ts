@@ -43,6 +43,19 @@ export const PLATFORM_TARGETS = [
 
 export type PlatformTarget = (typeof PLATFORM_TARGETS)[number];
 
+export const DETAIL_FOCUS_IDS = [
+  "selling-point",
+  "material",
+  "parameters",
+  "scene",
+  "comparison",
+  "craft",
+  "package",
+  "usage",
+] as const;
+
+export type DetailFocusId = (typeof DETAIL_FOCUS_IDS)[number];
+
 export type JobStatus =
   | "draft"
   | "queued"
@@ -71,6 +84,29 @@ export interface LocalAssetRecord {
   size: number;
   blob: Blob;
   createdAt: string;
+  caption?: string;
+  description?: string;
+}
+
+export interface CommerceStoryboardFrame {
+  title: string;
+  direction: string;
+  visualPrompt: string;
+  overlayText?: string;
+}
+
+export interface CommerceCopyResult {
+  id: string;
+  title: string;
+  body: string;
+  tags: string[];
+  cta: string;
+  platform: PlatformTarget;
+  openingLine?: string;
+  shotList?: string[];
+  sellingPoints?: string[];
+  coverText?: string;
+  storyboard?: CommerceStoryboardFrame[];
 }
 
 export interface LocalJobRecord {
@@ -84,6 +120,7 @@ export interface LocalJobRecord {
   tone?: string;
   garmentCategory?: string;
   workflowMode?: string;
+  detailFocusIds?: DetailFocusId[];
   aspectRatio: AspectRatio;
   imageSize: ImageSize;
   platform: PlatformTarget;
@@ -115,30 +152,62 @@ export interface StudioImageResult {
   mimeType: string;
   base64Data: string;
   caption?: string;
+  description?: string;
 }
 
-export interface CommerceCopyResult {
+export interface StudioJobResult {
   id: string;
+  module: StudioModule;
   title: string;
-  body: string;
-  tags: string[];
-  cta: string;
-  platform: PlatformTarget;
-  openingLine?: string;
-  shotList?: string[];
-  sellingPoints?: string[];
+  prompt: string;
+  notes?: string;
+  images: StudioImageResult[];
+  copyResults?: CommerceCopyResult[];
+  detailFocusIds?: DetailFocusId[];
+  createdAt: string;
 }
+
+export interface GenerationProgressTotals {
+  images: number;
+  copyResults: number;
+}
+
+export type GenerateStudioStreamEvent =
+  | {
+      type: "started";
+      job: Pick<StudioJobResult, "id" | "module" | "title" | "createdAt" | "detailFocusIds">;
+      totals: GenerationProgressTotals;
+    }
+  | {
+      type: "analysis";
+      notes?: string;
+      prompt: string;
+      totals: GenerationProgressTotals;
+    }
+  | {
+      type: "image";
+      image: StudioImageResult;
+      imageIndex: number;
+      totals: GenerationProgressTotals;
+      notesDelta?: string;
+    }
+  | {
+      type: "copy";
+      copyResult: CommerceCopyResult;
+      copyIndex: number;
+      totals: GenerationProgressTotals;
+    }
+  | {
+      type: "complete";
+      job: StudioJobResult;
+      totals: GenerationProgressTotals;
+    }
+  | {
+      type: "error";
+      error: string;
+    };
 
 export interface GenerateStudioResponse {
   ok: boolean;
-  job: {
-    id: string;
-    module: StudioModule;
-    title: string;
-    prompt: string;
-    notes?: string;
-    images: StudioImageResult[];
-    copyResults?: CommerceCopyResult[];
-    createdAt: string;
-  };
+  job: StudioJobResult;
 }

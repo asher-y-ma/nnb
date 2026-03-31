@@ -42,9 +42,9 @@ function HistoryCard({ job }: { job: LocalJobRecord }) {
       outputAssets: outputAssets.filter(
         (asset): asset is LocalAssetRecord => asset !== undefined && asset !== null,
       ),
-      availableInputCount: inputAssets.filter(
-        (asset) => asset !== undefined && asset !== null,
-      ).length,
+      inputAssets: inputAssets.filter(
+        (asset): asset is LocalAssetRecord => asset !== undefined && asset !== null,
+      ),
     };
   }, [job.id]);
 
@@ -55,6 +55,18 @@ function HistoryCard({ job }: { job: LocalJobRecord }) {
       assetState?.outputAssets.map((asset) => ({
         src: URL.createObjectURL(asset.blob),
         alt: asset.name,
+        caption: asset.caption,
+        description: asset.description,
+      })) ?? [],
+    [assetState],
+  );
+
+  const inputPreviews = useMemo(
+    () =>
+      assetState?.inputAssets.map((asset) => ({
+        src: URL.createObjectURL(asset.blob),
+        alt: asset.name,
+        role: asset.role,
       })) ?? [],
     [assetState],
   );
@@ -62,17 +74,14 @@ function HistoryCard({ job }: { job: LocalJobRecord }) {
   useEffect(() => {
     return () => {
       lightboxImages.forEach((image) => URL.revokeObjectURL(image.src));
+      inputPreviews.forEach((image) => URL.revokeObjectURL(image.src));
     };
-  }, [lightboxImages]);
+  }, [inputPreviews, lightboxImages]);
 
   const moduleLabel = MODULE_LABEL_MAP[job.module] ?? job.module;
   const previewImage = lightboxImages[0];
   const availableOutputCount = assetState?.outputAssets.length ?? 0;
-  const availableInputCount = assetState?.availableInputCount ?? 0;
-  const hasFullInputCache =
-    job.inputAssetIds.length > 0 && availableInputCount === job.inputAssetIds.length;
-  const hasPartialInputCache =
-    availableInputCount > 0 && availableInputCount < job.inputAssetIds.length;
+  const availableInputCount = assetState?.inputAssets.length ?? 0;
 
   async function copyBundleToClipboard() {
     if (!job.textResults?.length) {
@@ -125,126 +134,130 @@ function HistoryCard({ job }: { job: LocalJobRecord }) {
   }
 
   return (
-    <article className="studio-card rounded-[28px] p-4">
-      <div className="flex flex-col gap-4 sm:flex-row">
-        <div className="h-44 w-full overflow-hidden rounded-[22px] border border-black/8 bg-[#f5efe3] sm:max-w-[240px]">
-          {previewImage ? (
-            <button
-              type="button"
-              onClick={() => setOpenIndex(0)}
-              className="h-full w-full"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={previewImage.src}
-                alt={job.title}
-                className="h-full w-full object-cover"
-              />
-            </button>
-          ) : (
-            <div className="flex h-full items-center justify-center text-sm text-[#8d7d65]">
-              当前设备无本地预览
-            </div>
-          )}
+    <article className="studio-card rounded-[28px] p-5">
+      <div className="flex flex-col gap-5">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="rounded-full bg-[#f3ebdb] px-3 py-1 text-[11px] font-medium text-[#8d7740]">
+            {moduleLabel}
+          </span>
+          {job.workflowMode ? (
+            <span className="rounded-full border border-black/8 bg-white px-3 py-1 text-[11px] text-[#7b6b56]">
+              {job.workflowMode}
+            </span>
+          ) : null}
+          <span className="text-xs text-[#7b6b56]">
+            {dayjs(job.createdAt).format("YYYY-MM-DD HH:mm")}
+          </span>
         </div>
 
-        <div className="flex flex-1 flex-col justify-between gap-4">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-[#f3ebdb] px-3 py-1 text-[11px] font-medium text-[#8d7740]">
-                {moduleLabel}
-              </span>
-              {job.workflowMode ? (
-                <span className="rounded-full border border-black/8 bg-white px-3 py-1 text-[11px] text-[#7b6b56]">
-                  {job.workflowMode}
-                </span>
-              ) : null}
-              <span className="text-xs text-[#7b6b56]">
-                {dayjs(job.createdAt).format("YYYY-MM-DD HH:mm")}
-              </span>
+        <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+          <div className="space-y-3">
+            <p className="text-sm font-semibold text-[#17120d]">输入素材</p>
+            <div className="grid grid-cols-3 gap-3">
+              {inputPreviews.length ? (
+                inputPreviews.slice(0, 6).map((asset, index) => (
+                  <div
+                    key={`${asset.alt}-${index}`}
+                    className="overflow-hidden rounded-[18px] border border-black/8 bg-[#f5efe3]"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={asset.src} alt={asset.alt} className="aspect-square w-full object-cover" />
+                    <div className="px-2 py-2 text-[11px] text-[#6f604c]">
+                      {asset.role || "input"}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="col-span-3 rounded-[18px] border border-dashed border-black/10 bg-[#faf7f1] px-4 py-10 text-center text-sm text-[#8d7d65]">
+                  当前设备没有这条记录的本地输入素材
+                </div>
+              )}
             </div>
-            <h2 className="mt-3 text-xl font-semibold tracking-tight text-[#17120d]">
-              {job.title}
-            </h2>
-            <p className="mt-2 line-clamp-3 text-sm leading-7 text-[#6f604c]">
-              {job.prompt}
-            </p>
-            {job.notes ? (
-              <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#8a765c]">
-                AI 备注：{job.notes}
-              </p>
-            ) : null}
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 text-sm text-[#5c4e3b]">
+          <div className="space-y-3">
+            <p className="text-sm font-semibold text-[#17120d]">生成结果</p>
+            <div className="flex min-h-[220px] items-center justify-center rounded-[24px] border border-black/8 bg-[#f5efe3]">
+              {previewImage ? (
+                <button type="button" onClick={() => setOpenIndex(0)} className="h-full w-full">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={previewImage.src} alt={job.title} className="h-full w-full object-cover rounded-[24px]" />
+                </button>
+              ) : (
+                <div className="px-6 text-center text-sm leading-6 text-[#8d7d65]">
+                  当前设备无本地结果预览，可恢复参数后重新生成。
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight text-[#17120d]">{job.title}</h2>
+          <p className="mt-2 line-clamp-3 text-sm leading-7 text-[#6f604c]">{job.prompt}</p>
+          {job.notes ? (
+            <p className="mt-2 line-clamp-3 text-sm leading-6 text-[#8a765c]">{job.notes}</p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 text-sm text-[#5c4e3b]">
+          <span className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2">
+            <Images className="h-4 w-4" />
+            {availableOutputCount}/{job.outputAssetIds.length} 张结果图
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2">
+            输入素材 {availableInputCount}/{job.inputAssetIds.length} 张
+          </span>
+          {job.textResults?.length ? (
             <span className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2">
-              <Images className="h-4 w-4" />
-              {availableOutputCount}/{job.outputAssetIds.length} 张结果图
+              文案 {job.textResults.length} 组
             </span>
-            {job.textResults?.length ? (
-              <span className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2">
-                文案 {job.textResults.length} 组
-              </span>
-            ) : null}
-            <span
-              className={`inline-flex items-center gap-2 rounded-full px-4 py-2 ${
-                hasFullInputCache
-                  ? "border border-[#c6dcb7] bg-[#f4fbef] text-[#476335]"
-                  : "border border-[#ead8a7] bg-[#fdf6df] text-[#7c6325]"
-              }`}
-            >
-              {hasFullInputCache
-                ? `可恢复 ${availableInputCount} 张本地素材`
-                : hasPartialInputCache
-                  ? `已恢复 ${availableInputCount}/${job.inputAssetIds.length} 张素材`
-                  : "仅恢复参数"}
-            </span>
-          </div>
+          ) : null}
+        </div>
 
-          <div className="flex flex-wrap gap-3">
-            <Link
-              href={`/studio?module=${job.module}&restore=${job.id}`}
-              className="inline-flex items-center gap-2 rounded-full bg-[#17120d] px-4 py-2 text-sm font-medium text-[#f8f4e7]"
-            >
-              恢复并继续编辑
-            </Link>
-            <button
-              type="button"
-              onClick={downloadResults}
-              className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
-            >
-              <Download className="h-4 w-4" />
-              下载结果包
-            </button>
-            {job.textResults?.length ? (
-              <>
-                <button
-                  type="button"
-                  onClick={copyBundleToClipboard}
-                  className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
-                >
-                  <Copy className="h-4 w-4" />
-                  复制文案包
-                </button>
-                <button
-                  type="button"
-                  onClick={() => downloadCopyBundle("txt")}
-                  className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
-                >
-                  <FileText className="h-4 w-4" />
-                  TXT
-                </button>
-                <button
-                  type="button"
-                  onClick={() => downloadCopyBundle("json")}
-                  className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
-                >
-                  <FileJson2 className="h-4 w-4" />
-                  JSON
-                </button>
-              </>
-            ) : null}
-          </div>
+        <div className="flex flex-wrap gap-3">
+          <Link
+            href={`/studio?module=${job.module}&restore=${job.id}`}
+            className="inline-flex items-center gap-2 rounded-full bg-[#17120d] px-4 py-2 text-sm font-medium text-[#f8f4e7]"
+          >
+            恢复并继续编辑
+          </Link>
+          <button
+            type="button"
+            onClick={downloadResults}
+            className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
+          >
+            <Download className="h-4 w-4" />
+            下载结果包
+          </button>
+          {job.textResults?.length ? (
+            <>
+              <button
+                type="button"
+                onClick={copyBundleToClipboard}
+                className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
+              >
+                <Copy className="h-4 w-4" />
+                复制文案包
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadCopyBundle("txt")}
+                className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
+              >
+                <FileText className="h-4 w-4" />
+                TXT
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadCopyBundle("json")}
+                className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
+              >
+                <FileJson2 className="h-4 w-4" />
+                JSON
+              </button>
+            </>
+          ) : null}
         </div>
       </div>
 
@@ -258,10 +271,7 @@ function HistoryCard({ job }: { job: LocalJobRecord }) {
 }
 
 export function HistoryScreen() {
-  const jobs = useLiveQuery(
-    () => nnbDb.jobs.orderBy("createdAt").reverse().toArray(),
-    [],
-  );
+  const jobs = useLiveQuery(() => nnbDb.jobs.orderBy("createdAt").reverse().toArray(), []);
   const [query, setQuery] = useState("");
   const [moduleFilter, setModuleFilter] = useState<StudioModule | "all">("all");
 
@@ -293,7 +303,7 @@ export function HistoryScreen() {
           本地生成历史
         </h1>
         <p className="mt-3 max-w-3xl text-sm leading-7 text-[#6f604c]">
-          当前版本优先把结果图片保存在浏览器本地。你可以恢复同一设备上的本地素材继续生成，也可以把结果包和文案包重新导出。
+          当前版本优先把结果图保存在浏览器本地。你可以恢复同一设备里的本地素材继续生成，也可以把结果包和文案包重新导出。
         </p>
 
         <div className="mt-6 grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
@@ -310,9 +320,7 @@ export function HistoryScreen() {
 
           <select
             value={moduleFilter}
-            onChange={(event) =>
-              setModuleFilter(event.target.value as StudioModule | "all")
-            }
+            onChange={(event) => setModuleFilter(event.target.value as StudioModule | "all")}
             className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none focus:border-[#caa64c]"
           >
             <option value="all">全部模块</option>
@@ -334,9 +342,7 @@ export function HistoryScreen() {
       ) : (
         <section className="studio-card rounded-[32px] p-10 text-center">
           <RefreshCcw className="mx-auto h-10 w-10 text-[#caa64c]" />
-          <h2 className="mt-4 text-xl font-semibold text-[#17120d]">
-            暂时还没有符合条件的历史
-          </h2>
+          <h2 className="mt-4 text-xl font-semibold text-[#17120d]">暂时还没有符合条件的历史</h2>
           <p className="mt-3 text-sm leading-7 text-[#6f604c]">
             去主图、服装、带货或精修工作台生成一次内容，系统就会把结果保存在当前浏览器里。
           </p>
