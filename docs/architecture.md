@@ -294,8 +294,8 @@ Avoid:
 
 ### Routing Policy
 
-- Main / Detail / Style Clone default to `gemini-3.1-flash-image-preview`
-- Retouch uses `gemini-3.1-flash-image-preview` by default and escalates to `gemini-3-pro-image-preview` for high fidelity mode
+- Main / Detail / Style Clone default to `view`
+- Retouch uses `view` by default and escalates to `gemini-3-pro-image-preview` for high fidelity mode
 - Fashion uses `gemini-3.1-flash-image-preview` first because iterative editing speed matters
 - Commerce content text uses `gemini-3-flash-preview`
 - Bulk tags/titles can downgrade to `gemini-3.1-flash-lite-preview`

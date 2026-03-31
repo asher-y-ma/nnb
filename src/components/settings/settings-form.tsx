@@ -22,6 +22,24 @@ import {
 import { useSettingsStore } from "@/stores/settings-store";
 import { ASPECT_RATIOS, IMAGE_SIZES } from "@/types/studio";
 
+const SPEED_IMAGE_MODEL_OPTIONS = [
+  { value: DEFAULT_IMAGE_MODEL, label: DEFAULT_IMAGE_MODEL },
+  {
+    value: "gemini-3.1-flash-image",
+    label: "gemini-3.1-flash-image (默认速度-优惠版)",
+  },
+  { value: "gemini-2.5-flash-image", label: "gemini-2.5-flash-image" },
+];
+
+const HQ_IMAGE_MODEL_OPTIONS = [
+  { value: DEFAULT_HQ_IMAGE_MODEL, label: DEFAULT_HQ_IMAGE_MODEL },
+  {
+    value: "gemini-3.0-pro-image",
+    label: "gemini-3.0-pro-image (高质量模式-优惠版)",
+  },
+  { value: DEFAULT_IMAGE_MODEL, label: DEFAULT_IMAGE_MODEL },
+];
+
 export function SettingsForm({ authStatus }: { authStatus?: string }) {
   const settings = useSettingsStore();
   const { client, isConfigured, isLoading, user } = useSupabaseAuth();
@@ -308,8 +326,11 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
                 }
                 className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none transition-colors focus:border-[#caa64c]"
               >
-                <option value={DEFAULT_IMAGE_MODEL}>{DEFAULT_IMAGE_MODEL}</option>
-                <option value="gemini-2.5-flash-image">gemini-2.5-flash-image</option>
+                {SPEED_IMAGE_MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
 
@@ -322,8 +343,11 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
                 }
                 className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none transition-colors focus:border-[#caa64c]"
               >
-                <option value={DEFAULT_HQ_IMAGE_MODEL}>{DEFAULT_HQ_IMAGE_MODEL}</option>
-                <option value={DEFAULT_IMAGE_MODEL}>{DEFAULT_IMAGE_MODEL}</option>
+                {HQ_IMAGE_MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
