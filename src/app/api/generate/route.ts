@@ -63,6 +63,7 @@ function streamEvent(controller: ReadableStreamDefaultController<Uint8Array>, ev
 }
 
 export async function POST(request: Request) {
+  const requestId = crypto.randomUUID().slice(0, 8);
   let formData: FormData;
 
   try {
@@ -104,6 +105,28 @@ export async function POST(request: Request) {
   const responseMode = request.headers.get("x-response-mode");
   const jobMeta = createJobMeta(payload);
   const totals = getGenerationTotals(normalizedPayload);
+  const mode = responseMode === "stream" ? "ndjson-stream" : "json";
+
+  console.info(`[studio-api:${requestId}] request:start`, {
+    mode,
+    upstreamMethod:
+      normalizedPayload.imageModel === "gemini-3.1-flash-image" ||
+      normalizedPayload.imageModel === "gemini-3.0-pro-image"
+        ? "auto(generateContent|streamGenerateContent)"
+        : "generateContent",
+    module: normalizedPayload.module,
+    imageModel: normalizedPayload.imageModel,
+    textModel: normalizedPayload.textModel,
+    aspectRatio: normalizedPayload.aspectRatio,
+    imageSize: normalizedPayload.imageSize,
+    count: normalizedPayload.count,
+    batchCount: normalizedPayload.batchCount,
+    productImages: productImages.length,
+    referenceImages: referenceImages.length,
+    sourceImages: sourceImages.length,
+    modelImages: modelImages.length,
+    innerLayerImages: innerLayerImages.length,
+  });
 
   if (responseMode !== "stream") {
     try {
@@ -114,6 +137,15 @@ export async function POST(request: Request) {
         sourceImages,
         modelImages,
         innerLayerImages,
+        requestId,
+      });
+
+      console.info(`[studio-api:${requestId}] request:success`, {
+        mode,
+        jobId: jobMeta.id,
+        images: generated.images.length,
+        copyResults: generated.copyResults.length,
+        totals: generated.totals,
       });
 
       return Response.json({
@@ -127,6 +159,11 @@ export async function POST(request: Request) {
         },
       } satisfies GenerateStudioResponse);
     } catch (error) {
+      console.error(`[studio-api:${requestId}] request:error`, {
+        mode,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
       return Response.json(
         {
           ok: false,
@@ -134,6 +171,10 @@ export async function POST(request: Request) {
         },
         { status: 500 },
       );
+    } finally {
+      console.info(`[studio-api:${requestId}] request:finish`, {
+        mode,
+      });
     }
   }
 
@@ -153,9 +194,18 @@ export async function POST(request: Request) {
           sourceImages,
           modelImages,
           innerLayerImages,
+          requestId,
           onProgress: async (event) => {
             streamEvent(controller, event);
           },
+        });
+
+        console.info(`[studio-api:${requestId}] request:success`, {
+          mode,
+          jobId: jobMeta.id,
+          images: generated.images.length,
+          copyResults: generated.copyResults.length,
+          totals: generated.totals,
         });
 
         streamEvent(controller, {
@@ -170,11 +220,19 @@ export async function POST(request: Request) {
           },
         });
       } catch (error) {
+        console.error(`[studio-api:${requestId}] request:error`, {
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
         streamEvent(controller, {
           type: "error",
           error: error instanceof Error ? error.message : "生成失败",
         });
       } finally {
+        console.info(`[studio-api:${requestId}] request:finish`, {
+          mode,
+        });
         controller.close();
       }
     },

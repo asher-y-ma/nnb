@@ -16,13 +16,18 @@ import {
   FASHION_GARMENT_PRESETS,
 } from "@/lib/studio/workflow-presets";
 import {
+  clampStudioAspectRatio,
+  clampStudioImageSize,
+} from "@/config/studio";
+import {
   createInlineDataPart,
   createTextPart,
   createUserContent,
-  extractGeminiInlineData,
   extractGeminiParts,
   extractGeminiText,
   geminiGenerateContent,
+  resolveGeminiPartToBase64Image,
+  type GeminiTraceContext,
   type GeminiRequestPart,
 } from "@/lib/gemini/rest-client";
 import type {
@@ -259,9 +264,11 @@ export function getGenerationTotals(payload: GenerationPayload): GenerationProgr
 async function analyzeStyleReference({
   payload,
   referenceImages,
+  trace,
 }: {
   payload: GenerationPayload;
   referenceImages: File[];
+  trace?: GeminiTraceContext;
 }) {
   if (payload.module !== "style-clone" || referenceImages.length === 0) {
     return null;
@@ -272,6 +279,10 @@ async function analyzeStyleReference({
       baseUrl: payload.baseUrl,
       apiKey: payload.apiKey,
       model: payload.textModel,
+      trace: {
+        ...trace,
+        operation: "style-analysis",
+      },
       body: {
         contents: [
           createUserContent([
@@ -320,9 +331,11 @@ async function analyzeStyleReference({
 async function analyzeGarmentReference({
   payload,
   productImages,
+  trace,
 }: {
   payload: GenerationPayload;
   productImages: File[];
+  trace?: GeminiTraceContext;
 }) {
   if (payload.module !== "fashion" || productImages.length === 0) {
     return null;
@@ -333,6 +346,10 @@ async function analyzeGarmentReference({
       baseUrl: payload.baseUrl,
       apiKey: payload.apiKey,
       model: payload.textModel,
+      trace: {
+        ...trace,
+        operation: "fashion-analysis",
+      },
       body: {
         contents: [
           createUserContent([
@@ -580,6 +597,17 @@ function createInitialNoteSections({
   return sections;
 }
 
+function effectiveImageGenerationParams(
+  imageModel: string,
+  aspectRatio: string,
+  imageSize: string,
+): { aspectRatio: string; imageSize: string } {
+  return {
+    aspectRatio: clampStudioAspectRatio(imageModel, aspectRatio),
+    imageSize: clampStudioImageSize(imageModel, imageSize),
+  };
+}
+
 async function generateSingleImagePlan({
   payload,
   plan,
@@ -588,6 +616,7 @@ async function generateSingleImagePlan({
   sourceImages,
   modelImages,
   innerLayerImages,
+  trace,
 }: {
   payload: GenerationPayload;
   plan: ImageGenerationPlan;
@@ -596,11 +625,23 @@ async function generateSingleImagePlan({
   sourceImages: File[];
   modelImages: File[];
   innerLayerImages: File[];
+  trace?: GeminiTraceContext;
 }) {
+  const { aspectRatio: genAspectRatio, imageSize: genImageSize } =
+    effectiveImageGenerationParams(
+      payload.imageModel,
+      payload.aspectRatio,
+      payload.imageSize,
+    );
+
   const imageResponse = await geminiGenerateContent({
     baseUrl: payload.baseUrl,
     apiKey: payload.apiKey,
     model: payload.imageModel,
+    trace: {
+      ...trace,
+      operation: `image:${payload.module}`,
+    },
     body: {
       contents: [
         createUserContent(
@@ -619,33 +660,28 @@ async function generateSingleImagePlan({
         candidateCount: 1,
         responseModalities: ["TEXT", "IMAGE"],
         imageConfig: {
-          aspectRatio: payload.aspectRatio,
-          imageSize: payload.imageSize,
+          aspectRatio: genAspectRatio,
+          imageSize: genImageSize,
         },
       },
     },
   });
 
   const notesDelta = extractGeminiText(imageResponse).trim();
-  const images = extractGeminiParts(imageResponse).reduce<StudioImageResult[]>(
-    (collection, part, index) => {
-      const inlineData = extractGeminiInlineData(part);
-      if (!inlineData?.data) {
-        return collection;
-      }
-
-      collection.push({
-        id: crypto.randomUUID(),
-        mimeType: inlineData.mimeType,
-        base64Data: inlineData.data,
-        caption: collection.length > 0 ? `${plan.label} ${index + 1}` : plan.label,
-        description: plan.description,
-      });
-
-      return collection;
-    },
-    [],
+  const parts = extractGeminiParts(imageResponse);
+  const resolvedImages = await Promise.all(
+    parts.map((part) => resolveGeminiPartToBase64Image(part, payload.apiKey, trace)),
   );
+
+  const images = resolvedImages
+    .filter((resolved): resolved is NonNullable<typeof resolved> => Boolean(resolved))
+    .map((resolved, index) => ({
+      id: crypto.randomUUID(),
+      mimeType: resolved.mimeType,
+      base64Data: resolved.data,
+      caption: index > 0 ? `${plan.label} ${index + 1}` : plan.label,
+      description: plan.description,
+    })) satisfies StudioImageResult[];
 
   return {
     images,
@@ -656,14 +692,20 @@ async function generateSingleImagePlan({
 async function generateSingleCopyResult({
   payload,
   variantIndex,
+  trace,
 }: {
   payload: GenerationPayload;
   variantIndex: number;
+  trace?: GeminiTraceContext;
 }) {
   const copyResponse = await geminiGenerateContent({
     baseUrl: payload.baseUrl,
     apiKey: payload.apiKey,
     model: payload.textModel,
+    trace: {
+      ...trace,
+      operation: "commerce-copy",
+    },
     body: {
       contents: [
         createUserContent([
@@ -756,6 +798,7 @@ export async function generateStudioAssets({
   modelImages,
   innerLayerImages,
   onProgress,
+  requestId,
 }: {
   payload: GenerationPayload;
   productImages: File[];
@@ -764,18 +807,22 @@ export async function generateStudioAssets({
   modelImages: File[];
   innerLayerImages: File[];
   onProgress?: (event: ProgressEvent) => Promise<void> | void;
+  requestId?: string;
 }) {
+  const trace = { requestId } satisfies GeminiTraceContext;
   const totals = getGenerationTotals(payload);
   const shouldGenerateImages = totals.images > 0;
 
   const styleBrief = await analyzeStyleReference({
     payload,
     referenceImages,
+    trace,
   });
 
   const garmentBrief = await analyzeGarmentReference({
     payload,
     productImages,
+    trace,
   });
 
   const plans = shouldGenerateImages
@@ -846,6 +893,7 @@ export async function generateStudioAssets({
           sourceImages,
           modelImages,
           innerLayerImages,
+          trace,
         });
 
         return {
@@ -864,6 +912,7 @@ export async function generateStudioAssets({
           const copyResult = await generateSingleCopyResult({
             payload,
             variantIndex: index + 1,
+            trace,
           });
 
           return {

@@ -26,7 +26,12 @@ import {
   ResultImageGrid,
   SelectableCard,
 } from "@/components/studio/workspace-sections";
-import { STUDIO_NAV_ITEMS } from "@/config/studio";
+import {
+  BUDGET_STUDIO_ASPECT_RATIOS,
+  BUDGET_STUDIO_IMAGE_SIZES,
+  isBudgetStudioImageModel,
+  STUDIO_NAV_ITEMS,
+} from "@/config/studio";
 import {
   DETAIL_FOCUS_PRESETS,
   FASHION_GARMENT_PRESETS,
@@ -209,6 +214,34 @@ export function StudioWorkspace({
   const [isPending, startTransition] = useTransition();
   const deferredResult = result;
   void isPending;
+
+  const resolvedImageModel = useMemo(
+    () => resolveImageModelByQualityMode(qualityMode, settings),
+    [qualityMode, settings.defaultImageModel, settings.hqImageModel],
+  );
+
+  const isBudgetModel = isBudgetStudioImageModel(resolvedImageModel);
+  const aspectRatioOptions: AspectRatio[] = isBudgetModel
+    ? [...BUDGET_STUDIO_ASPECT_RATIOS]
+    : [...ASPECT_RATIOS];
+  const imageSizeOptions: ImageSize[] = isBudgetModel
+    ? [...BUDGET_STUDIO_IMAGE_SIZES]
+    : [...IMAGE_SIZES];
+
+  useEffect(() => {
+    if (!isBudgetStudioImageModel(resolvedImageModel)) {
+      return;
+    }
+    setAspectRatio((current) =>
+      (BUDGET_STUDIO_ASPECT_RATIOS as readonly string[]).includes(current) ? current : "1:1",
+    );
+    setImageSize((current) => {
+      if (current === "4K") {
+        return "2K";
+      }
+      return (BUDGET_STUDIO_IMAGE_SIZES as readonly string[]).includes(current) ? current : "1K";
+    });
+  }, [resolvedImageModel]);
 
   const isCommerceCopyOnly =
     activeModule === "commerce" &&
@@ -1266,7 +1299,7 @@ export function StudioWorkspace({
                   onChange={(event) => setAspectRatio(event.target.value as AspectRatio)}
                   className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none focus:border-[#caa64c]"
                 >
-                  {ASPECT_RATIOS.map((ratio) => (
+                  {aspectRatioOptions.map((ratio) => (
                     <option key={ratio} value={ratio}>
                       {ratio}
                     </option>
@@ -1281,7 +1314,7 @@ export function StudioWorkspace({
                   onChange={(event) => setImageSize(event.target.value as ImageSize)}
                   className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none focus:border-[#caa64c]"
                 >
-                  {IMAGE_SIZES.map((size) => (
+                  {imageSizeOptions.map((size) => (
                     <option key={size} value={size}>
                       {size}
                     </option>
