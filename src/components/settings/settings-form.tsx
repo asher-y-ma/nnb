@@ -9,7 +9,7 @@ import {
   RefreshCcw,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { useSupabaseAuth } from "@/components/providers/auth-provider";
@@ -18,51 +18,87 @@ import {
   DEFAULT_HQ_IMAGE_MODEL,
   DEFAULT_IMAGE_MODEL,
   DEFAULT_TEXT_MODEL,
+  IMAGE_MODEL_OPTIONS,
+  getDefaultHqImageModel,
+  getDefaultImageModel,
 } from "@/config/studio";
 import { useSettingsStore } from "@/stores/settings-store";
 import { ASPECT_RATIOS, IMAGE_SIZES } from "@/types/studio";
 
-const SPEED_IMAGE_MODEL_OPTIONS = [
-  { value: DEFAULT_IMAGE_MODEL, label: DEFAULT_IMAGE_MODEL },
-  {
-    value: "gemini-3.1-flash-image",
-    label: "gemini-3.1-flash-image (默认速度-优惠版)",
-  },
-  { value: "gemini-2.5-flash-image", label: "gemini-2.5-flash-image" },
-];
-
-const HQ_IMAGE_MODEL_OPTIONS = [
-  { value: DEFAULT_HQ_IMAGE_MODEL, label: DEFAULT_HQ_IMAGE_MODEL },
-  {
-    value: "gemini-3.0-pro-image",
-    label: "gemini-3.0-pro-image (高质量模式-优惠版)",
-  },
-  { value: DEFAULT_IMAGE_MODEL, label: DEFAULT_IMAGE_MODEL },
-];
-
 export function SettingsForm({ authStatus }: { authStatus?: string }) {
   const settings = useSettingsStore();
   const { client, isConfigured, isLoading, user } = useSupabaseAuth();
+  const updateSettings = settings.updateSettings;
 
   const [isTesting, setIsTesting] = useState(false);
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [isSyncBusy, setIsSyncBusy] = useState(false);
   const [email, setEmail] = useState("");
 
+  const speedImageModelOptions = useMemo(
+    () => [
+      ...IMAGE_MODEL_OPTIONS.filter(
+        (option) =>
+          option.value === DEFAULT_IMAGE_MODEL ||
+          option.value === "gemini-3.1-flash-image",
+      ),
+    ],
+    [],
+  );
+
+  const hqImageModelOptions = useMemo(
+    () => [
+      ...IMAGE_MODEL_OPTIONS.filter(
+        (option) =>
+          option.value === DEFAULT_HQ_IMAGE_MODEL ||
+          option.value === "gemini-3.0-pro-image",
+      ),
+    ],
+    [],
+  );
+
   useEffect(() => {
     if (authStatus === "success") {
-      toast.success("邮箱登录成功，已完成回调。");
+      toast.success("Login callback completed.");
     }
   }, [authStatus]);
 
+  useEffect(() => {
+    const nextSettings: Record<string, string> = {};
+    const speedValues = new Set<string>(
+      speedImageModelOptions.map((option) => option.value),
+    );
+    const hqValues = new Set<string>(
+      hqImageModelOptions.map((option) => option.value),
+    );
+
+    if (!speedValues.has(settings.defaultImageModel)) {
+      nextSettings.defaultImageModel = getDefaultImageModel();
+    }
+
+    if (!hqValues.has(settings.hqImageModel)) {
+      nextSettings.hqImageModel = getDefaultHqImageModel();
+    }
+
+    if (Object.keys(nextSettings).length > 0) {
+      updateSettings(nextSettings);
+    }
+  }, [
+    hqImageModelOptions,
+    settings.defaultImageModel,
+    settings.hqImageModel,
+    speedImageModelOptions,
+    updateSettings,
+  ]);
+
   async function handleTestConnection() {
     if (!settings.apiBaseUrl.trim()) {
-      toast.error("请先填写 Gemini API URL。");
+      toast.error("Please fill in the API URL first.");
       return;
     }
 
     if (!settings.apiKey.trim()) {
-      toast.error("请先填写 Gemini API Key。");
+      toast.error("Please fill in the API key first.");
       return;
     }
 
@@ -83,12 +119,12 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
 
       if (!response.ok) {
         const payload = (await response.json()) as { error?: string };
-        throw new Error(payload.error ?? "测试失败");
+        throw new Error(payload.error ?? "Connection test failed.");
       }
 
-      toast.success("Gemini 连通性正常，可以开始使用。");
+      toast.success("Gemini connection looks good.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "测试失败");
+      toast.error(error instanceof Error ? error.message : "Connection test failed.");
     } finally {
       setIsTesting(false);
     }
@@ -96,20 +132,19 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
 
   async function handleMagicLinkSignIn() {
     if (!client) {
-      toast.error("当前环境未配置 Supabase。");
+      toast.error("Supabase is not configured.");
       return;
     }
 
     if (!email.trim()) {
-      toast.error("请先填写邮箱地址。");
+      toast.error("Please enter your email address.");
       return;
     }
 
     setIsAuthBusy(true);
 
     try {
-      const redirectBase =
-        process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+      const redirectBase = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
 
       const { error } = await client.auth.signInWithOtp({
         email: email.trim(),
@@ -122,9 +157,9 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
         throw error;
       }
 
-      toast.success("登录链接已发送到邮箱，请点击邮件完成登录。");
+      toast.success("Magic link sent. Check your email.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "发送失败");
+      toast.error(error instanceof Error ? error.message : "Failed to send login link.");
     } finally {
       setIsAuthBusy(false);
     }
@@ -143,9 +178,9 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
         throw error;
       }
 
-      toast.success("已退出登录。");
+      toast.success("Signed out.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "退出失败");
+      toast.error(error instanceof Error ? error.message : "Sign out failed.");
     } finally {
       setIsAuthBusy(false);
     }
@@ -153,7 +188,7 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
 
   async function handleCloudSync() {
     if (!user) {
-      toast.error("请先登录再同步云端设置。");
+      toast.error("Please log in before syncing settings.");
       return;
     }
 
@@ -178,12 +213,12 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
       const payload = (await response.json()) as { ok?: boolean; error?: string };
 
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "同步失败");
+        throw new Error(payload.error ?? "Cloud sync failed.");
       }
 
-      toast.success("当前默认设置已同步到 Supabase。");
+      toast.success("Default settings synced to Supabase.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "同步失败");
+      toast.error(error instanceof Error ? error.message : "Cloud sync failed.");
     } finally {
       setIsSyncBusy(false);
     }
@@ -191,7 +226,7 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
 
   async function handlePullCloudSettings() {
     if (!user) {
-      toast.error("请先登录再拉取云端设置。");
+      toast.error("Please log in before pulling cloud settings.");
       return;
     }
 
@@ -213,15 +248,15 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
       };
 
       if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? "拉取失败");
+        throw new Error(payload.error ?? "Failed to pull cloud settings.");
       }
 
       if (!payload.settings) {
-        toast.message("云端还没有保存过默认设置。");
+        toast.message("No cloud defaults found yet.");
         return;
       }
 
-      settings.updateSettings({
+      updateSettings({
         apiBaseUrl: payload.settings.base_url ?? settings.apiBaseUrl,
         defaultImageModel:
           payload.settings.default_image_model ?? settings.defaultImageModel,
@@ -236,9 +271,9 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
           settings.defaultImageSize,
       });
 
-      toast.success("已拉取云端默认设置。");
+      toast.success("Cloud defaults loaded.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "拉取失败");
+      toast.error(error instanceof Error ? error.message : "Failed to pull cloud settings.");
     } finally {
       setIsSyncBusy(false);
     }
@@ -253,11 +288,11 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
               Settings
             </p>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-[#17120d]">
-              Gemini 与默认工作参数
+              API And Default Workspace Settings
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-7 text-[#6f604c]">
-              当前版本只使用标准 Gemini 官方方式。你可以在这里设置 API Key、
-              默认图像模型、默认文字模型、默认比例，以及是否启用云端元数据同步。
+              This version only keeps the mccum Gemini path. Configure the API URL,
+              API key, default image models, text model, aspect ratio, and image size here.
             </p>
           </div>
           <div className="rounded-full bg-[#f3ebdb] px-4 py-2 text-xs font-medium text-[#8d7740]">
@@ -267,25 +302,25 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
 
         <div className="mt-8 grid gap-5">
           <label className="grid gap-2">
-            <span className="text-sm font-medium text-[#2e271d]">Gemini API URL</span>
+            <span className="text-sm font-medium text-[#2e271d]">API URL</span>
             <input
               type="url"
               value={settings.apiBaseUrl}
               onChange={(event) =>
-                settings.updateSettings({ apiBaseUrl: event.target.value.trim() })
+                updateSettings({ apiBaseUrl: event.target.value.trim() })
               }
-              placeholder="https://mccum.com/"
+              placeholder={DEFAULT_GEMINI_BASE_URL}
               className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none transition-colors focus:border-[#caa64c]"
             />
           </label>
 
           <label className="grid gap-2">
-            <span className="text-sm font-medium text-[#2e271d]">Gemini API Key</span>
+            <span className="text-sm font-medium text-[#2e271d]">API Key</span>
             <input
               type="password"
               value={settings.apiKey}
               onChange={(event) =>
-                settings.updateSettings({ apiKey: event.target.value.trim() })
+                updateSettings({ apiKey: event.target.value.trim() })
               }
               placeholder="AIza..."
               className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none transition-colors focus:border-[#caa64c]"
@@ -297,11 +332,11 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
               type="checkbox"
               checked={settings.rememberApiKey}
               onChange={(event) =>
-                settings.updateSettings({ rememberApiKey: event.target.checked })
+                updateSettings({ rememberApiKey: event.target.checked })
               }
               className="h-4 w-4 rounded border-black/20"
             />
-            在当前浏览器中记住 API Key，方便游客直接继续使用
+            Remember API key in this browser
           </label>
 
           <label className="inline-flex items-center gap-3 rounded-[22px] border border-black/8 bg-[#faf7f1] px-4 py-4 text-sm text-[#544736]">
@@ -309,24 +344,24 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
               type="checkbox"
               checked={settings.syncToCloud}
               onChange={(event) =>
-                settings.updateSettings({ syncToCloud: event.target.checked })
+                updateSettings({ syncToCloud: event.target.checked })
               }
               className="h-4 w-4 rounded border-black/20"
             />
-            登录后同步默认设置和任务元数据到 Supabase
+            Sync defaults and job metadata to Supabase after login
           </label>
 
           <div className="grid gap-5 md:grid-cols-2">
             <label className="grid gap-2">
-              <span className="text-sm font-medium text-[#2e271d]">默认图像模型</span>
+              <span className="text-sm font-medium text-[#2e271d]">Default image model</span>
               <select
                 value={settings.defaultImageModel}
                 onChange={(event) =>
-                  settings.updateSettings({ defaultImageModel: event.target.value })
+                  updateSettings({ defaultImageModel: event.target.value })
                 }
                 className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none transition-colors focus:border-[#caa64c]"
               >
-                {SPEED_IMAGE_MODEL_OPTIONS.map((option) => (
+                {speedImageModelOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -335,15 +370,15 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
             </label>
 
             <label className="grid gap-2">
-              <span className="text-sm font-medium text-[#2e271d]">高质量图像模型</span>
+              <span className="text-sm font-medium text-[#2e271d]">High quality image model</span>
               <select
                 value={settings.hqImageModel}
                 onChange={(event) =>
-                  settings.updateSettings({ hqImageModel: event.target.value })
+                  updateSettings({ hqImageModel: event.target.value })
                 }
                 className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none transition-colors focus:border-[#caa64c]"
               >
-                {HQ_IMAGE_MODEL_OPTIONS.map((option) => (
+                {hqImageModelOptions.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -354,11 +389,11 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
 
           <div className="grid gap-5 md:grid-cols-3">
             <label className="grid gap-2">
-              <span className="text-sm font-medium text-[#2e271d]">默认文字模型</span>
+              <span className="text-sm font-medium text-[#2e271d]">Default text model</span>
               <select
                 value={settings.defaultTextModel}
                 onChange={(event) =>
-                  settings.updateSettings({ defaultTextModel: event.target.value })
+                  updateSettings({ defaultTextModel: event.target.value })
                 }
                 className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none transition-colors focus:border-[#caa64c]"
               >
@@ -371,11 +406,11 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
             </label>
 
             <label className="grid gap-2">
-              <span className="text-sm font-medium text-[#2e271d]">默认比例</span>
+              <span className="text-sm font-medium text-[#2e271d]">Default aspect ratio</span>
               <select
                 value={settings.defaultAspectRatio}
                 onChange={(event) =>
-                  settings.updateSettings({
+                  updateSettings({
                     defaultAspectRatio:
                       event.target.value as (typeof ASPECT_RATIOS)[number],
                   })
@@ -391,11 +426,11 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
             </label>
 
             <label className="grid gap-2">
-              <span className="text-sm font-medium text-[#2e271d]">默认尺寸</span>
+              <span className="text-sm font-medium text-[#2e271d]">Default image size</span>
               <select
                 value={settings.defaultImageSize}
                 onChange={(event) =>
-                  settings.updateSettings({
+                  updateSettings({
                     defaultImageSize: event.target.value as (typeof IMAGE_SIZES)[number],
                   })
                 }
@@ -419,7 +454,7 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
             className="inline-flex items-center gap-2 rounded-full bg-[#17120d] px-5 py-3 text-sm font-medium text-[#f9f5ea] transition-opacity hover:opacity-92 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <CheckCircle2 className="h-4 w-4" />
-            {isTesting ? "测试中..." : "测试 Gemini 连通性"}
+            {isTesting ? "Testing..." : "Test current API connection"}
           </button>
           <button
             type="button"
@@ -428,7 +463,7 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
             className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-5 py-3 text-sm font-medium text-[#3a3024] transition-colors hover:bg-[#f7efe0] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Cloud className="h-4 w-4" />
-            {isSyncBusy ? "同步中..." : "同步当前设置到云端"}
+            {isSyncBusy ? "Syncing..." : "Sync defaults to cloud"}
           </button>
           <button
             type="button"
@@ -437,15 +472,15 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
             className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-5 py-3 text-sm font-medium text-[#3a3024] transition-colors hover:bg-[#f7efe0] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <RefreshCcw className="h-4 w-4" />
-            拉取云端默认设置
+            Pull cloud defaults
           </button>
           <button
             type="button"
             onClick={() =>
-              settings.updateSettings({
+              updateSettings({
                 apiBaseUrl: DEFAULT_GEMINI_BASE_URL,
-                defaultImageModel: DEFAULT_IMAGE_MODEL,
-                hqImageModel: DEFAULT_HQ_IMAGE_MODEL,
+                defaultImageModel: getDefaultImageModel(),
+                hqImageModel: getDefaultHqImageModel(),
                 defaultTextModel: DEFAULT_TEXT_MODEL,
                 defaultAspectRatio: "3:4",
                 defaultImageSize: "1K",
@@ -454,7 +489,7 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
             className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-5 py-3 text-sm font-medium text-[#3a3024] transition-colors hover:bg-[#f7efe0]"
           >
             <Sparkles className="h-4 w-4" />
-            恢复推荐默认值
+            Restore recommended defaults
           </button>
         </div>
       </section>
@@ -466,9 +501,9 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
               <Mail className="h-4 w-4" />
             </span>
             <div>
-              <p className="font-semibold text-[#17120d]">账号与云端同步</p>
+              <p className="font-semibold text-[#17120d]">Account and cloud sync</p>
               <p className="text-sm text-[#6f604c]">
-                {isConfigured ? "可选登录，云端只同步元数据" : "当前未配置 Supabase"}
+                {isConfigured ? "Optional login, metadata only sync" : "Supabase not configured"}
               </p>
             </div>
           </div>
@@ -477,11 +512,9 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
             user ? (
               <div className="mt-4 space-y-3 text-sm text-[#5c4e3b]">
                 <div className="rounded-[20px] border border-black/8 bg-white px-4 py-4">
-                  <p className="font-medium text-[#17120d]">
-                    {user.email || "已登录"}
-                  </p>
+                  <p className="font-medium text-[#17120d]">{user.email || "Signed in"}</p>
                   <p className="mt-2 leading-6 text-[#6f604c]">
-                    默认设置和任务元数据可同步到 Supabase。API Key 仍默认只保存在本地浏览器，不上传云端。
+                    Default settings and job metadata can sync to Supabase. API keys stay in the local browser only.
                   </p>
                 </div>
                 <button
@@ -491,7 +524,7 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
                   className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium text-[#3a3024] hover:bg-[#f7efe0] disabled:opacity-60"
                 >
                   <LogOut className="h-4 w-4" />
-                  退出登录
+                  Sign out
                 </button>
               </div>
             ) : (
@@ -500,7 +533,7 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
                   type="email"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
-                  placeholder="输入邮箱，接收登录链接"
+                  placeholder="Enter email to receive a magic link"
                   className="h-12 w-full rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none transition-colors focus:border-[#caa64c]"
                 />
                 <button
@@ -510,13 +543,13 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
                   className="inline-flex items-center gap-2 rounded-full bg-[#17120d] px-4 py-3 text-sm font-medium text-[#f9f5ea] disabled:opacity-60"
                 >
                   <Mail className="h-4 w-4" />
-                  {isAuthBusy ? "发送中..." : "发送邮箱登录链接"}
+                  {isAuthBusy ? "Sending..." : "Send magic link"}
                 </button>
               </div>
             )
           ) : (
             <p className="mt-4 text-sm leading-7 text-[#6f604c]">
-              你可以稍后在 `.env` 中补上 Supabase URL 与 Publishable Key，登录能力和云端元数据同步就会自动启用。
+              Add Supabase URL and publishable key in your environment later if you want login and cloud metadata sync.
             </p>
           )}
         </section>
@@ -527,22 +560,21 @@ export function SettingsForm({ authStatus }: { authStatus?: string }) {
               <KeyRound className="h-4 w-4" />
             </span>
             <div>
-              <p className="font-semibold text-[#17120d]">当前策略</p>
-              <p className="text-sm text-[#6f604c]">官方 Gemini 直连</p>
+              <p className="font-semibold text-[#17120d]">Current strategy</p>
+              <p className="text-sm text-[#6f604c]">mccum Gemini only</p>
             </div>
           </div>
           <ul className="mt-4 space-y-3 text-sm leading-6 text-[#5c4e3b]">
-            <li>不使用 OpenAI 兼容层</li>
-            <li>不接 Imagen 4</li>
-            <li>游客可直接输入 Key 使用</li>
-            <li>图片结果优先保存在浏览器本地</li>
+            <li>Only the mccum Gemini path is kept</li>
+            <li>Guests can paste their own key and use it directly</li>
+            <li>Generated images stay in local browser storage first</li>
           </ul>
         </section>
 
         <section className="studio-card rounded-[28px] p-5">
-          <p className="font-semibold text-[#17120d]">下载提醒</p>
+          <p className="font-semibold text-[#17120d]">Download reminder</p>
           <p className="mt-3 text-sm leading-7 text-[#6f604c]">
-            当前版本不长期保存在云端。每次生成完成后，请尽快下载原图或批量打包下载，避免浏览器缓存被系统回收。
+            Images are not stored in the cloud long term right now. Download originals or bundles after each run so browser cache cleanup does not wipe them out.
           </p>
         </section>
       </aside>

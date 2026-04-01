@@ -33,12 +33,12 @@ export const IMAGE_SIZES = ["512", "1K", "2K", "4K"] as const;
 export type ImageSize = (typeof IMAGE_SIZES)[number];
 
 export const PLATFORM_TARGETS = [
-  "通用电商",
-  "小红书",
-  "抖音",
-  "淘宝",
-  "拼多多",
-  "视频号",
+  "\u901a\u7528\u7535\u5546",
+  "\u5c0f\u7ea2\u4e66",
+  "\u6296\u97f3",
+  "\u6dd8\u5b9d",
+  "\u62fc\u591a\u591a",
+  "\u89c6\u9891\u53f7",
 ] as const;
 
 export type PlatformTarget = (typeof PLATFORM_TARGETS)[number];

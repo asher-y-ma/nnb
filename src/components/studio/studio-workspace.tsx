@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   AlertTriangle,
@@ -27,9 +27,10 @@ import {
   SelectableCard,
 } from "@/components/studio/workspace-sections";
 import {
-  BUDGET_STUDIO_ASPECT_RATIOS,
-  BUDGET_STUDIO_IMAGE_SIZES,
-  isBudgetStudioImageModel,
+  getQualityModeModel,
+  getSupportedStudioAspectRatios,
+  getSupportedStudioImageSizes,
+  normalizeStudioImageModel,
   STUDIO_NAV_ITEMS,
 } from "@/config/studio";
 import {
@@ -70,20 +71,6 @@ import type {
 } from "@/types/studio";
 import { ASPECT_RATIOS, IMAGE_SIZES, PLATFORM_TARGETS } from "@/types/studio";
 
-const SPEED_BUDGET_IMAGE_MODEL = "gemini-3.1-flash-image";
-const HQ_BUDGET_IMAGE_MODEL = "gemini-3.0-pro-image";
-
-const QUALITY_MODE_OPTIONS: Array<{
-  id: QualityMode;
-  label: string;
-  description: string;
-}> = [
-  { id: "speed", label: "默认速度", description: "沿用设置里的默认速度模型" },
-  { id: "speed-budget", label: "速度优惠版", description: SPEED_BUDGET_IMAGE_MODEL },
-  { id: "hq", label: "高质量模式", description: "沿用设置里的高质量模型" },
-  { id: "hq-budget", label: "高质优惠版", description: HQ_BUDGET_IMAGE_MODEL },
-];
-
 const DEFAULT_TONE = "专业但不生硬";
 const DEFAULT_GARMENT_CATEGORY = "上衣";
 const DEFAULT_PLATFORM: PlatformTarget = "通用电商";
@@ -99,15 +86,40 @@ function resolveImageModelByQualityMode(
 ) {
   switch (qualityMode) {
     case "speed-budget":
-      return SPEED_BUDGET_IMAGE_MODEL;
+      return getQualityModeModel("speed-budget");
     case "hq":
-      return settings.hqImageModel;
+      return normalizeStudioImageModel(settings.hqImageModel);
     case "hq-budget":
-      return HQ_BUDGET_IMAGE_MODEL;
+      return getQualityModeModel("hq-budget");
     case "speed":
     default:
-      return settings.defaultImageModel;
+      return normalizeStudioImageModel(settings.defaultImageModel);
   }
+}
+
+function buildQualityModeOptions(settings: ReturnType<typeof useSettingsStore.getState>) {
+  return [
+    {
+      id: "speed" as const,
+      label: "默认速度",
+      description: normalizeStudioImageModel(settings.defaultImageModel),
+    },
+    {
+      id: "speed-budget" as const,
+      label: "速度优惠版",
+      description: getQualityModeModel("speed-budget"),
+    },
+    {
+      id: "hq" as const,
+      label: "高质量模式",
+      description: normalizeStudioImageModel(settings.hqImageModel),
+    },
+    {
+      id: "hq-budget" as const,
+      label: "高质优惠版",
+      description: getQualityModeModel("hq-budget"),
+    },
+  ];
 }
 
 function appendNoteSection(currentNotes: string | undefined, nextSection?: string) {
@@ -171,7 +183,7 @@ function getDefaultDetailFocusIds(): DetailFocusId[] {
 }
 
 function isFashionModelRequired(workflowMode: string) {
-  return workflowMode !== "服装平铺";
+  return workflowMode !== "鏈嶈骞抽摵";
 }
 
 export function StudioWorkspace({
@@ -217,29 +229,43 @@ export function StudioWorkspace({
 
   const resolvedImageModel = useMemo(
     () => resolveImageModelByQualityMode(qualityMode, settings),
-    [qualityMode, settings.defaultImageModel, settings.hqImageModel],
+    [qualityMode, settings],
   );
 
-  const isBudgetModel = isBudgetStudioImageModel(resolvedImageModel);
-  const aspectRatioOptions: AspectRatio[] = isBudgetModel
-    ? [...BUDGET_STUDIO_ASPECT_RATIOS]
-    : [...ASPECT_RATIOS];
-  const imageSizeOptions: ImageSize[] = isBudgetModel
-    ? [...BUDGET_STUDIO_IMAGE_SIZES]
-    : [...IMAGE_SIZES];
+  const qualityModeOptions = useMemo(
+    () => buildQualityModeOptions(settings),
+    [settings],
+  );
+  const aspectRatioOptions: AspectRatio[] = (
+    getSupportedStudioAspectRatios(resolvedImageModel) ?? ASPECT_RATIOS
+  ) as AspectRatio[];
+  const imageSizeOptions: ImageSize[] = (
+    getSupportedStudioImageSizes(resolvedImageModel) ?? IMAGE_SIZES
+  ) as ImageSize[];
 
   useEffect(() => {
-    if (!isBudgetStudioImageModel(resolvedImageModel)) {
-      return;
-    }
+    const supportedAspectRatios = getSupportedStudioAspectRatios(resolvedImageModel);
+    const supportedImageSizes = getSupportedStudioImageSizes(resolvedImageModel);
+
     setAspectRatio((current) =>
-      (BUDGET_STUDIO_ASPECT_RATIOS as readonly string[]).includes(current) ? current : "1:1",
+      supportedAspectRatios?.includes(current)
+        ? current
+        : ((supportedAspectRatios?.[0] ?? "1:1") as AspectRatio),
     );
     setImageSize((current) => {
-      if (current === "4K") {
+      if (!supportedImageSizes) {
+        return current;
+      }
+
+      if (supportedImageSizes.includes(current)) {
+        return current as ImageSize;
+      }
+
+      if (current === "4K" && supportedImageSizes.includes("2K")) {
         return "2K";
       }
-      return (BUDGET_STUDIO_IMAGE_SIZES as readonly string[]).includes(current) ? current : "1K";
+
+      return (supportedImageSizes[0] ?? "1K") as ImageSize;
     });
   }, [resolvedImageModel]);
 
@@ -262,7 +288,7 @@ export function StudioWorkspace({
       ? `${result?.copyResults?.length ?? 0}/${generationTotals.copyResults} 组文案`
       : "";
 
-    return [imageProgress, copyProgress].filter(Boolean).join(" · ");
+    return [imageProgress, copyProgress].filter(Boolean).join(" / ");
   }, [generationTotals, result]);
 
   const selectedDetailFocuses = useMemo(
@@ -308,7 +334,7 @@ export function StudioWorkspace({
   }
 
   function applyTemplate(template: string) {
-    setPrompt((currentPrompt) => (currentPrompt ? `${currentPrompt}；${template}` : template));
+    setPrompt((currentPrompt) => (currentPrompt ? `${currentPrompt}锛?{template}` : template));
   }
 
   function toggleDetailFocus(id: DetailFocusId) {
@@ -474,12 +500,12 @@ export function StudioWorkspace({
 
   function validateBeforeGenerate() {
     if (!settings.apiBaseUrl.trim()) {
-      toast.error("请先去设置页填写 Gemini API URL。");
+      toast.error("请先去设置页填写 API URL。");
       return false;
     }
 
     if (!settings.apiKey.trim()) {
-      toast.error("请先去设置页填写 Gemini API Key。");
+      toast.error("请先去设置页填写 API Key。");
       return false;
     }
 
@@ -628,7 +654,7 @@ export function StudioWorkspace({
     }
 
     const requestPayload = {
-      module: activeModule,
+        module: activeModule,
       baseUrl: settings.apiBaseUrl,
       workflowMode,
       prompt,
@@ -670,7 +696,7 @@ export function StudioWorkspace({
         };
 
         if (!response.ok || !payload.ok) {
-          throw new Error(payload.error ?? "生成失败");
+          throw new Error(payload.error ?? "鐢熸垚澶辫触");
         }
 
         setResult(payload.job);
@@ -688,7 +714,7 @@ export function StudioWorkspace({
     }
 
     const requestPayload = {
-      module: activeModule,
+        module: activeModule,
       baseUrl: settings.apiBaseUrl,
       workflowMode,
       prompt,
@@ -733,7 +759,7 @@ export function StudioWorkspace({
         const payload = (await response.json().catch(() => null)) as
           | (GenerateStudioResponse & { error?: string })
           | null;
-        throw new Error(payload?.error ?? "生成失败");
+        throw new Error(payload?.error ?? "鐢熸垚澶辫触");
       }
 
       let completedJob: StudioJobResult | null = null;
@@ -822,7 +848,7 @@ export function StudioWorkspace({
     }
 
     const requestPayload = {
-      module: activeModule,
+        module: activeModule,
       baseUrl: settings.apiBaseUrl,
       workflowMode,
       prompt,
@@ -871,7 +897,7 @@ export function StudioWorkspace({
           const payload = (await streamResponse.json().catch(() => null)) as
             | (GenerateStudioResponse & { error?: string })
             | null;
-          throw new Error(payload?.error ?? "生成失败");
+          throw new Error(payload?.error ?? "鐢熸垚澶辫触");
         }
 
         await readStreamEvents(streamResponse, async (event) => {
@@ -959,7 +985,7 @@ export function StudioWorkspace({
         if (!fallbackResponse.ok || !fallbackPayload.ok) {
           throw new Error(
             fallbackPayload.error ??
-              (streamError instanceof Error ? streamError.message : "生成失败"),
+              (streamError instanceof Error ? streamError.message : "鐢熸垚澶辫触"),
           );
         }
 
@@ -1113,7 +1139,7 @@ export function StudioWorkspace({
                 <div>
                   <p className="text-sm font-semibold text-[#17120d]">详情图主题（可多选）</p>
                   <p className="mt-1 text-xs leading-5 text-[#7b6b56]">
-                    已选几个主题，就会按主题分别生成对应的详情图。
+                    选中几个主题，系统就会按主题分别生成对应的详情图。
                   </p>
                 </div>
                 <span className="rounded-full bg-[#f3ebdb] px-3 py-1 text-[11px] font-medium text-[#8d7740]">
@@ -1139,7 +1165,7 @@ export function StudioWorkspace({
             <section className="studio-card rounded-[28px] p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-semibold text-[#17120d]">服饰类型</p>
+                  <p className="text-sm font-semibold text-[#17120d]">服装类型</p>
                   <p className="mt-1 text-xs leading-5 text-[#7b6b56]">
                     当前优先把上衣和下装试穿做稳，连体服和换上下装后续再补。
                   </p>
@@ -1196,7 +1222,7 @@ export function StudioWorkspace({
                 title={`上传模特图${isFashionModelRequired(workflowMode) ? "（必传）" : "（可选）"}`}
                 hint={
                   isFashionModelRequired(workflowMode)
-                    ? "当前模式需要模特图，系统会尽量保留人物身份和镜头氛围。"
+                    ? "当前模式需要模特图，系统会尽量保留人物身份与镜头氛围。"
                     : "服装平铺模式可以不上传模特图。"
                 }
                 files={modelImages}
@@ -1204,8 +1230,7 @@ export function StudioWorkspace({
                 multiple={false}
                 maxFiles={1}
               />
-              {garmentCategory === "上衣" &&
-              (workflowMode === "上身试穿" || workflowMode === "一键换装") ? (
+              {isFashionModelRequired(workflowMode) ? (
                 <UploadCard
                   title="上传内搭图（可选）"
                   hint="如果模特本身有内搭或叠穿需求，可以一并上传，系统会更好处理层次。"
@@ -1221,7 +1246,7 @@ export function StudioWorkspace({
           <section className="studio-card rounded-[28px] p-4">
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold text-[#17120d]">提示词与额外要求</p>
+                <p className="text-sm font-semibold text-[#17120d]">鎻愮ず璇嶄笌棰濆瑕佹眰</p>
                 <p className="mt-1 text-xs leading-5 text-[#7b6b56]">{moduleMeta.helper}</p>
               </div>
               <WandSparkles className="h-4 w-4 text-[#a78c49]" />
@@ -1376,7 +1401,7 @@ export function StudioWorkspace({
             )}
 
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
-              {QUALITY_MODE_OPTIONS.map((option) => (
+              {qualityModeOptions.map((option) => (
                 <button
                   key={option.id}
                   type="button"
@@ -1556,7 +1581,7 @@ export function StudioWorkspace({
                 <LoaderCircle className="h-7 w-7 animate-spin" />
               </div>
               <h2 className="mt-6 text-xl font-semibold text-[#17120d]">
-                正在调用 Gemini 生成结果
+                正在生成结果
               </h2>
               <p className="mt-3 max-w-md text-sm leading-7 text-[#6f604c]">
                 系统会保留当前输入参数，生成成功后自动写入本地历史。请不要关闭页面。

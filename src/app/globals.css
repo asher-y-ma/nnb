@@ -9,6 +9,10 @@
   --accent: #caa64c;
   --accent-strong: #9d7a28;
   --muted: #7b6b56;
+  --font-nnb-sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Helvetica Neue",
+    Helvetica, Arial, sans-serif;
+  --font-nnb-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+    Menlo, monospace;
 }
 
 @theme inline {

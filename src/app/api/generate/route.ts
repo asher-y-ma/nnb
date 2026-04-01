@@ -4,6 +4,7 @@ import {
   generateStudioAssets,
   getGenerationTotals,
 } from "@/lib/gemini/client";
+import { isFlowStudioImageModel } from "@/config/studio";
 import type {
   DetailFocusId,
   GenerateStudioResponse,
@@ -109,11 +110,9 @@ export async function POST(request: Request) {
 
   console.info(`[studio-api:${requestId}] request:start`, {
     mode,
-    upstreamMethod:
-      normalizedPayload.imageModel === "gemini-3.1-flash-image" ||
-      normalizedPayload.imageModel === "gemini-3.0-pro-image"
-        ? "auto(generateContent|streamGenerateContent)"
-        : "generateContent",
+    upstreamMethod: isFlowStudioImageModel(normalizedPayload.imageModel)
+      ? "generateContentStream"
+      : "generateContent",
     module: normalizedPayload.module,
     imageModel: normalizedPayload.imageModel,
     textModel: normalizedPayload.textModel,

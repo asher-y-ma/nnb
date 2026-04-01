@@ -27,6 +27,12 @@ create table if not exists public.provider_profiles (
 alter table public.provider_profiles
   add column if not exists base_url text not null default 'https://mccum.com/';
 
+alter table public.provider_profiles
+  alter column default_image_model set default 'gemini-3.1-flash-image-preview';
+
+alter table public.provider_profiles
+  alter column hq_image_model set default 'gemini-3-pro-image-preview';
+
 create unique index if not exists provider_profiles_user_provider_idx
   on public.provider_profiles (user_id, provider_type);
 

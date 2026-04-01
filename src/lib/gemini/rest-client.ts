@@ -8,7 +8,7 @@ import {
 
 import {
   DEFAULT_GEMINI_BASE_URL,
-  isBudgetStudioImageModel,
+  isFlowStudioImageModel,
 } from "@/config/studio";
 
 const geminiDispatcher: Dispatcher | undefined =
@@ -224,11 +224,11 @@ function summarizeImageUrl(url: string) {
   }
 }
 
-function shouldPreferStreamGenerateContent(model: string, body: GeminiGenerateContentRequest) {
+function shouldUseStreamGenerateContent(model: string, body: GeminiGenerateContentRequest) {
   const wantsImage =
     body.generationConfig?.responseModalities?.includes("IMAGE") ?? false;
 
-  return isBudgetStudioImageModel(model) && wantsImage;
+  return isFlowStudioImageModel(model) && wantsImage;
 }
 
 function buildGeminiEndpoint({
@@ -300,10 +300,10 @@ function mergeStreamResponses(
       existing.content = {
         ...existing.content,
         ...candidate.content,
-        parts: [
-          ...(existing.content?.parts ?? []),
-          ...(candidate.content?.parts ?? []),
-        ],
+        parts: mergeGeminiResponseParts(
+          existing.content?.parts ?? [],
+          candidate.content?.parts ?? [],
+        ),
       };
     });
   }
@@ -340,6 +340,17 @@ function normalizeGeminiSdkBaseUrl(input?: string) {
     .replace(/\/v\d+(beta)?$/i, "");
 }
 
+const sdkFetch: typeof fetch | undefined = geminiDispatcher
+  ? ((async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ) =>
+      undiciFetch(input as Parameters<typeof undiciFetch>[0], {
+        ...((init ?? {}) as unknown as Parameters<typeof undiciFetch>[1]),
+        dispatcher: geminiDispatcher,
+      })) as unknown as typeof fetch)
+  : undefined;
+
 function toSdkPart(part: GeminiRequestPart): SdkPart {
   if ("text" in part) {
     return { text: part.text };
@@ -357,6 +368,18 @@ function toSdkContent(content: GeminiContent): SdkContent {
   return {
     role: content.role,
     parts: content.parts.map(toSdkPart),
+  };
+}
+
+function createGeminiSdkRequest(model: string, body: GeminiGenerateContentRequest) {
+  return {
+    model,
+    contents: body.contents.map(toSdkContent),
+    config: body.generationConfig,
+    tools: body.tools,
+    systemInstruction: body.systemInstruction
+      ? toSdkContent(body.systemInstruction)
+      : undefined,
   };
 }
 
@@ -393,7 +416,144 @@ function toGeminiResponsePart(part: SdkPart): GeminiResponsePart {
   return {};
 }
 
-async function geminiGenerateContentViaSdk({
+function normalizeSdkResponse(
+  response: {
+    candidates?: Array<{
+      finishReason?: string;
+      content?: { parts?: SdkPart[] };
+    }>;
+    promptFeedback?: { blockReason?: string };
+    usageMetadata?: unknown;
+  },
+): GeminiGenerateContentResponse {
+  return {
+    candidates:
+      response.candidates?.map((candidate) => ({
+        finishReason: candidate.finishReason,
+        content: {
+          parts: candidate.content?.parts?.map(toGeminiResponsePart) ?? [],
+        },
+      })) ?? [],
+    promptFeedback: response.promptFeedback
+      ? {
+          blockReason: response.promptFeedback.blockReason,
+        }
+      : undefined,
+    usageMetadata: response.usageMetadata as Record<string, unknown> | undefined,
+  };
+}
+
+function appendMergedGeminiPart(parts: GeminiResponsePart[], incoming: GeminiResponsePart) {
+  const last = parts[parts.length - 1];
+  const incomingInline = extractGeminiInlineData(incoming);
+  const incomingInlineUrl = extractGeminiInlineImageUrl(incoming);
+  const incomingFile = extractGeminiFileUriPart(incoming);
+  const incomingText = incoming.text ?? "";
+
+  if (incomingInline?.data) {
+    const lastInline = last ? extractGeminiInlineData(last) : null;
+    const sameMimeType =
+      lastInline?.mimeType === incomingInline.mimeType ||
+      (!lastInline?.mimeType && !incomingInline.mimeType);
+
+    if (last && lastInline?.data && sameMimeType) {
+      if (last.inlineData?.data !== undefined) {
+        last.inlineData.data += incomingInline.data;
+      } else if (last.inline_data?.data !== undefined) {
+        last.inline_data.data += incomingInline.data;
+      }
+      return;
+    }
+
+    parts.push({
+      inlineData: {
+        mimeType: incomingInline.mimeType,
+        data: incomingInline.data,
+      },
+      thought: incoming.thought,
+    });
+    return;
+  }
+
+  if (incomingInlineUrl) {
+    const lastInlineUrl = last ? extractGeminiInlineImageUrl(last) : null;
+    if (lastInlineUrl?.url === incomingInlineUrl.url) {
+      return;
+    }
+
+    parts.push({
+      inlineData: {
+        mimeType: incomingInlineUrl.mimeType,
+        url: incomingInlineUrl.url,
+      },
+      thought: incoming.thought,
+    });
+    return;
+  }
+
+  if (incomingFile) {
+    const lastFile = last ? extractGeminiFileUriPart(last) : null;
+    if (lastFile?.uri === incomingFile.uri) {
+      return;
+    }
+
+    parts.push({
+      fileData: {
+        fileUri: incomingFile.uri,
+        mimeType: incomingFile.mimeType,
+      },
+      thought: incoming.thought,
+    });
+    return;
+  }
+
+  if (incomingText) {
+    const canAppendToLastText =
+      last &&
+      typeof last.text === "string" &&
+      !extractGeminiInlineData(last) &&
+      !extractGeminiInlineImageUrl(last) &&
+      !extractGeminiFileUriPart(last) &&
+      Boolean(last.thought) === Boolean(incoming.thought);
+
+    if (canAppendToLastText) {
+      last.text = `${last.text ?? ""}${incomingText}`;
+      return;
+    }
+
+    parts.push({
+      text: incomingText,
+      thought: incoming.thought,
+    });
+  }
+}
+
+function mergeGeminiResponseParts(
+  existingParts: GeminiResponsePart[],
+  incomingParts: GeminiResponsePart[],
+) {
+  const merged = [...existingParts];
+
+  for (const part of incomingParts) {
+    appendMergedGeminiPart(merged, part);
+  }
+
+  return merged;
+}
+
+async function createGeminiSdkClient(baseUrl: string | undefined, apiKey: string) {
+  const { GoogleGenAI } = await import("@google/genai");
+
+  return new GoogleGenAI({
+    apiKey,
+    ...(sdkFetch ? { fetch: sdkFetch } : {}),
+    httpOptions: {
+      baseUrl: normalizeGeminiSdkBaseUrl(baseUrl),
+    },
+  });
+}
+
+async function geminiGenerateContentViaSdkStream({
   baseUrl,
   apiKey,
   model,
@@ -406,23 +566,8 @@ async function geminiGenerateContentViaSdk({
   body: GeminiGenerateContentRequest;
   trace?: GeminiTraceContext;
 }): Promise<GeminiGenerateContentResponse> {
-  const { GoogleGenAI } = await import("@google/genai");
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      baseUrl: normalizeGeminiSdkBaseUrl(baseUrl),
-    },
-  });
-
-  const sdkRequest = {
-    model,
-    contents: body.contents.map(toSdkContent),
-    config: body.generationConfig,
-    tools: body.tools,
-    systemInstruction: body.systemInstruction
-      ? toSdkContent(body.systemInstruction)
-      : undefined,
-  };
+  const ai = await createGeminiSdkClient(baseUrl, apiKey);
+  const sdkRequest = createGeminiSdkRequest(model, body);
 
   const startedAt = Date.now();
   logGemini("info", trace, "sdk-stream:start", {
@@ -438,21 +583,7 @@ async function geminiGenerateContentViaSdk({
     const chunks: GeminiGenerateContentResponse[] = [];
 
     for await (const chunk of responseStream) {
-      chunks.push({
-        candidates:
-          chunk.candidates?.map((candidate) => ({
-            finishReason: candidate.finishReason,
-            content: {
-              parts: candidate.content?.parts?.map(toGeminiResponsePart) ?? [],
-            },
-          })) ?? [],
-        promptFeedback: chunk.promptFeedback
-          ? {
-              blockReason: chunk.promptFeedback.blockReason,
-            }
-          : undefined,
-        usageMetadata: chunk.usageMetadata as Record<string, unknown> | undefined,
-      });
+      chunks.push(normalizeSdkResponse(chunk));
     }
 
     const merged = mergeStreamResponses(chunks);
@@ -466,6 +597,52 @@ async function geminiGenerateContentViaSdk({
     return merged;
   } catch (error) {
     logGemini("error", trace, "sdk-stream:error", {
+      model,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+async function geminiGenerateContentViaSdkUnary({
+  baseUrl,
+  apiKey,
+  model,
+  body,
+  trace,
+}: {
+  baseUrl?: string;
+  apiKey: string;
+  model: string;
+  body: GeminiGenerateContentRequest;
+  trace?: GeminiTraceContext;
+}): Promise<GeminiGenerateContentResponse> {
+  const ai = await createGeminiSdkClient(baseUrl, apiKey);
+  const sdkRequest = createGeminiSdkRequest(model, body);
+
+  const startedAt = Date.now();
+  logGemini("info", trace, "sdk-unary:start", {
+    model,
+    endpointBaseUrl: normalizeGeminiSdkBaseUrl(baseUrl),
+    request: summarizeGeminiRequest(body),
+  });
+
+  try {
+    const response = await ai.models.generateContent(
+      sdkRequest as Parameters<typeof ai.models.generateContent>[0],
+    );
+    const normalizedResponse = normalizeSdkResponse(response);
+
+    logGemini("info", trace, "sdk-unary:success", {
+      model,
+      durationMs: Date.now() - startedAt,
+      response: summarizeGeminiResponse(normalizedResponse),
+    });
+
+    return normalizedResponse;
+  } catch (error) {
+    logGemini("error", trace, "sdk-unary:error", {
       model,
       durationMs: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error),
@@ -660,7 +837,7 @@ export function normalizeGeminiBaseUrl(input?: string) {
   return `${normalized}/v1beta`;
 }
 
-export async function geminiGenerateContent({
+async function geminiGenerateContentViaHttp({
   baseUrl,
   apiKey,
   model,
@@ -673,27 +850,7 @@ export async function geminiGenerateContent({
   body: GeminiGenerateContentRequest;
   trace?: GeminiTraceContext;
 }) {
-  const useStreamEndpoint = shouldPreferStreamGenerateContent(model, body);
-  if (useStreamEndpoint) {
-    try {
-      return await geminiGenerateContentViaSdk({
-        baseUrl,
-        apiKey,
-        model,
-        body,
-        trace,
-      });
-    } catch (error) {
-      if (!shouldFallbackFromSdkStream(error)) {
-        throw error;
-      }
-
-      logGemini("warn", trace, "sdk-stream:fallback-to-http-stream", {
-        model,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+  const useStreamEndpoint = shouldUseStreamGenerateContent(model, body);
 
   const endpoint = buildGeminiEndpoint({
     baseUrl,
@@ -799,6 +956,57 @@ export async function geminiGenerateContent({
   });
 
   return responsePayload;
+}
+
+export async function geminiGenerateContent({
+  baseUrl,
+  apiKey,
+  model,
+  body,
+  trace,
+}: {
+  baseUrl?: string;
+  apiKey: string;
+  model: string;
+  body: GeminiGenerateContentRequest;
+  trace?: GeminiTraceContext;
+}) {
+  const useStreamMethod = shouldUseStreamGenerateContent(model, body);
+
+  try {
+    return useStreamMethod
+      ? await geminiGenerateContentViaSdkStream({
+          baseUrl,
+          apiKey,
+          model,
+          body,
+          trace,
+        })
+      : await geminiGenerateContentViaSdkUnary({
+          baseUrl,
+          apiKey,
+          model,
+          body,
+          trace,
+        });
+  } catch (error) {
+    if (!useStreamMethod || !shouldFallbackFromSdkStream(error)) {
+      throw error;
+    }
+
+    logGemini("warn", trace, "sdk-stream:fallback-to-http-stream", {
+      model,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+
+    return geminiGenerateContentViaHttp({
+      baseUrl,
+      apiKey,
+      model,
+      body,
+      trace,
+    });
+  }
 }
 
 export function extractGeminiParts(response: GeminiGenerateContentResponse) {

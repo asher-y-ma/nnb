@@ -1,14 +1,41 @@
 import type { StudioModuleDefinition } from "@/types/studio";
 
 export const DEFAULT_GEMINI_BASE_URL = "https://mccum.com/";
-export const DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
-export const DEFAULT_HQ_IMAGE_MODEL = "gemini-3-pro-image-preview";
+
+export const DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
+export const DEFAULT_GEMINI_HQ_IMAGE_MODEL = "gemini-3-pro-image-preview";
 export const DEFAULT_TEXT_MODEL = "gemini-3-flash-preview";
+
+export const DEFAULT_IMAGE_MODEL = DEFAULT_GEMINI_IMAGE_MODEL;
+export const DEFAULT_HQ_IMAGE_MODEL = DEFAULT_GEMINI_HQ_IMAGE_MODEL;
+
+export const IMAGE_MODEL_OPTIONS = [
+  {
+    value: "gemini-3-pro-image-preview",
+    label: "Gemini 3 Pro Image (Preview)",
+  },
+  {
+    value: "gemini-3.0-pro-image",
+    label: "Gemini 3 Pro flow",
+  },
+  {
+    value: "gemini-3.1-flash-image-preview",
+    label: "Gemini 3.1 Flash Image (Preview)",
+  },
+  {
+    value: "gemini-3.1-flash-image",
+    label: "Gemini 3.1 Flash flow",
+  },
+] as const;
 
 export const PREVIEW_STUDIO_IMAGE_MODELS = [
   "gemini-3-pro-image-preview",
   "gemini-3.1-flash-image-preview",
-  "gemini-2.5-flash-image",
+] as const;
+
+export const FLOW_STUDIO_IMAGE_MODELS = [
+  "gemini-3.0-pro-image",
+  "gemini-3.1-flash-image",
 ] as const;
 
 export const PREVIEW_STUDIO_ASPECT_RATIOS = [
@@ -24,15 +51,7 @@ export const PREVIEW_STUDIO_ASPECT_RATIOS = [
   "21:9",
 ] as const;
 
-export const PREVIEW_STUDIO_IMAGE_SIZES = ["1K", "2K", "4K"] as const;
-
-/** 优惠档生图模型：不支持 4K，且仅支持下列比例（与 Google 文档/网关行为对齐）。 */
-export const BUDGET_STUDIO_IMAGE_MODELS = [
-  "gemini-3.1-flash-image",
-  "gemini-3.0-pro-image",
-] as const;
-
-export const BUDGET_STUDIO_ASPECT_RATIOS = [
+export const FLOW_STUDIO_ASPECT_RATIOS = [
   "1:1",
   "3:4",
   "4:3",
@@ -40,38 +59,77 @@ export const BUDGET_STUDIO_ASPECT_RATIOS = [
   "16:9",
 ] as const;
 
-export const BUDGET_STUDIO_IMAGE_SIZES = ["512", "1K", "2K"] as const;
+export const PREVIEW_STUDIO_IMAGE_SIZES = ["1K", "2K", "4K"] as const;
+export const FLOW_STUDIO_IMAGE_SIZES = ["1K", "2K"] as const;
+
+export const GEMINI_PREVIEW_IMAGE_MODELS = PREVIEW_STUDIO_IMAGE_MODELS;
+export const GEMINI_PREVIEW_ASPECT_RATIOS = PREVIEW_STUDIO_ASPECT_RATIOS;
+export const GEMINI_PREVIEW_IMAGE_SIZES = PREVIEW_STUDIO_IMAGE_SIZES;
+export const BUDGET_STUDIO_IMAGE_MODELS = FLOW_STUDIO_IMAGE_MODELS;
+export const BUDGET_STUDIO_ASPECT_RATIOS = FLOW_STUDIO_ASPECT_RATIOS;
+export const BUDGET_STUDIO_IMAGE_SIZES = FLOW_STUDIO_IMAGE_SIZES;
+
+export function isFlowStudioImageModel(model: string): boolean {
+  return (FLOW_STUDIO_IMAGE_MODELS as readonly string[]).includes(model);
+}
 
 export function isBudgetStudioImageModel(model: string): boolean {
-  return (BUDGET_STUDIO_IMAGE_MODELS as readonly string[]).includes(model);
+  return isFlowStudioImageModel(model);
 }
 
 export function isPreviewStudioImageModel(model: string): boolean {
   return (PREVIEW_STUDIO_IMAGE_MODELS as readonly string[]).includes(model);
 }
 
-export function getSupportedStudioAspectRatios(
-  model: string,
-): readonly string[] | null {
-  if (isBudgetStudioImageModel(model)) {
-    return BUDGET_STUDIO_ASPECT_RATIOS;
+export function isSupportedStudioImageModel(model: string): boolean {
+  return (
+    isPreviewStudioImageModel(model) ||
+    isFlowStudioImageModel(model)
+  );
+}
+
+export function normalizeStudioImageModel(model: string): string {
+  return isSupportedStudioImageModel(model) ? model : DEFAULT_IMAGE_MODEL;
+}
+
+export function getDefaultImageModel(): string {
+  return DEFAULT_IMAGE_MODEL;
+}
+
+export function getDefaultHqImageModel(): string {
+  return DEFAULT_HQ_IMAGE_MODEL;
+}
+
+export function getQualityModeModel(
+  qualityMode: "speed-budget" | "hq-budget",
+): string {
+  return qualityMode === "speed-budget"
+    ? "gemini-3.1-flash-image"
+    : "gemini-3.0-pro-image";
+}
+
+export function getSupportedStudioAspectRatios(model: string): readonly string[] | null {
+  const normalizedModel = normalizeStudioImageModel(model);
+
+  if (isFlowStudioImageModel(normalizedModel)) {
+    return FLOW_STUDIO_ASPECT_RATIOS;
   }
 
-  if (isPreviewStudioImageModel(model)) {
+  if (isPreviewStudioImageModel(normalizedModel)) {
     return PREVIEW_STUDIO_ASPECT_RATIOS;
   }
 
   return null;
 }
 
-export function getSupportedStudioImageSizes(
-  model: string,
-): readonly string[] | null {
-  if (isBudgetStudioImageModel(model)) {
-    return BUDGET_STUDIO_IMAGE_SIZES;
+export function getSupportedStudioImageSizes(model: string): readonly string[] | null {
+  const normalizedModel = normalizeStudioImageModel(model);
+
+  if (isFlowStudioImageModel(normalizedModel)) {
+    return FLOW_STUDIO_IMAGE_SIZES;
   }
 
-  if (isPreviewStudioImageModel(model)) {
+  if (isPreviewStudioImageModel(normalizedModel)) {
     return PREVIEW_STUDIO_IMAGE_SIZES;
   }
 
