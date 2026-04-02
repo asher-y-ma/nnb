@@ -183,7 +183,7 @@ function getDefaultDetailFocusIds(): DetailFocusId[] {
 }
 
 function isFashionModelRequired(workflowMode: string) {
-  return workflowMode !== "鏈嶈骞抽摵";
+  return workflowMode !== "服装平铺";
 }
 
 export function StudioWorkspace({
@@ -333,9 +333,9 @@ export function StudioWorkspace({
     setInnerLayerImages([]);
   }
 
-  function applyTemplate(template: string) {
-    setPrompt((currentPrompt) => (currentPrompt ? `${currentPrompt}锛?{template}` : template));
-  }
+function applyTemplate(template: string) {
+    setPrompt((currentPrompt) => (currentPrompt ? `${currentPrompt}，${template}` : template));
+}
 
   function toggleDetailFocus(id: DetailFocusId) {
     setDetailFocusIds((current) =>
@@ -1246,7 +1246,7 @@ export function StudioWorkspace({
           <section className="studio-card rounded-[28px] p-4">
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <p className="text-sm font-semibold text-[#17120d]">鎻愮ず璇嶄笌棰濆瑕佹眰</p>
+                <p className="text-sm font-semibold text-[#17120d]">提示词与额外要求</p>
                 <p className="mt-1 text-xs leading-5 text-[#7b6b56]">{moduleMeta.helper}</p>
               </div>
               <WandSparkles className="h-4 w-4 text-[#a78c49]" />

@@ -82,10 +82,7 @@ export function isPreviewStudioImageModel(model: string): boolean {
 }
 
 export function isSupportedStudioImageModel(model: string): boolean {
-  return (
-    isPreviewStudioImageModel(model) ||
-    isFlowStudioImageModel(model)
-  );
+  return isPreviewStudioImageModel(model) || isFlowStudioImageModel(model);
 }
 
 export function normalizeStudioImageModel(model: string): string {
@@ -108,7 +105,9 @@ export function getQualityModeModel(
     : "gemini-3.0-pro-image";
 }
 
-export function getSupportedStudioAspectRatios(model: string): readonly string[] | null {
+export function getSupportedStudioAspectRatios(
+  model: string,
+): readonly string[] | null {
   const normalizedModel = normalizeStudioImageModel(model);
 
   if (isFlowStudioImageModel(normalizedModel)) {
@@ -122,7 +121,9 @@ export function getSupportedStudioAspectRatios(model: string): readonly string[]
   return null;
 }
 
-export function getSupportedStudioImageSizes(model: string): readonly string[] | null {
+export function getSupportedStudioImageSizes(
+  model: string,
+): readonly string[] | null {
   const normalizedModel = normalizeStudioImageModel(model);
 
   if (isFlowStudioImageModel(normalizedModel)) {
