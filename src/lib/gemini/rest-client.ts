@@ -217,6 +217,115 @@ function summarizeGeminiResponse(response: GeminiGenerateContentResponse) {
   };
 }
 
+function sanitizeForLog(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForLog(item));
+  }
+
+  if (!value || typeof value !== "object") {
+    if (typeof value === "string" && value.length > 2000) {
+      return `${value.slice(0, 2000)}...[truncated ${value.length - 2000} chars]`;
+    }
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {};
+
+  for (const [key, nested] of Object.entries(record)) {
+    if (
+      (key === "data" || key === "inlineData" || key === "inline_data") &&
+      nested &&
+      typeof nested === "object"
+    ) {
+      sanitized[key] = sanitizeForLog(nested);
+      continue;
+    }
+
+    if (key === "data" && typeof nested === "string") {
+      sanitized[key] = `[base64 length=${nested.length}]`;
+      continue;
+    }
+
+    if (key.toLowerCase().includes("key") && typeof nested === "string") {
+      sanitized[key] = "***";
+      continue;
+    }
+
+    sanitized[key] = sanitizeForLog(nested);
+  }
+
+  return sanitized;
+}
+
+function logGeminiPayload(
+  level: "info" | "warn" | "error",
+  trace: GeminiTraceContext | undefined,
+  message: string,
+  payload: unknown,
+) {
+  logGemini(level, trace, message, {
+    payload: sanitizeForLog(payload) as Record<string, unknown>,
+  });
+}
+
+function previewText(text: string | undefined, maxLength = 180) {
+  if (!text) {
+    return "";
+  }
+
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength)}...`;
+}
+
+function summarizeGeminiPart(part: GeminiResponsePart, index: number) {
+  const inline = extractGeminiInlineData(part);
+  const inlineUrl = extractGeminiInlineImageUrl(part);
+  const fileRef = extractGeminiFileUriPart(part);
+  const textImageUrl = extractGeminiTextImageUrl(part);
+
+  return {
+    index,
+    thought: Boolean(part.thought),
+    kind: inline?.data
+      ? "inlineData"
+      : inlineUrl
+        ? "inlineUrl"
+        : fileRef
+          ? "fileData"
+          : textImageUrl
+            ? "textImageUrl"
+            : part.text?.trim()
+              ? "text"
+              : "unknown",
+    mimeType:
+      inline?.mimeType ??
+      inlineUrl?.mimeType ??
+      fileRef?.mimeType ??
+      undefined,
+    bytes: inline?.data?.length ?? undefined,
+    url: inlineUrl?.url
+      ? summarizeImageUrl(inlineUrl.url)
+      : fileRef?.uri
+        ? summarizeImageUrl(fileRef.uri)
+        : textImageUrl
+          ? summarizeImageUrl(textImageUrl)
+          : undefined,
+    textPreview: part.text?.trim() ? previewText(part.text) : undefined,
+  };
+}
+
+export function summarizeGeminiPartsForLog(parts: GeminiResponsePart[]) {
+  return {
+    partCount: parts.length,
+    parts: parts.slice(0, 8).map((part, index) => summarizeGeminiPart(part, index)),
+  };
+}
+
 function summarizeImageUrl(url: string) {
   try {
     const parsed = new URL(url);
@@ -231,6 +340,13 @@ function shouldUseStreamGenerateContent(model: string, body: GeminiGenerateConte
     body.generationConfig?.responseModalities?.includes("IMAGE") ?? false;
 
   return isFlowStudioImageModel(model) && wantsImage;
+}
+
+function shouldUseHttpUnaryForImage(model: string, body: GeminiGenerateContentRequest) {
+  const wantsImage =
+    body.generationConfig?.responseModalities?.includes("IMAGE") ?? false;
+
+  return wantsImage && !isFlowStudioImageModel(model);
 }
 
 function buildGeminiEndpoint({
@@ -378,7 +494,7 @@ function createGeminiSdkRequest(model: string, body: GeminiGenerateContentReques
     model,
     contents: body.contents.map(toSdkContent),
     config: body.generationConfig,
-    tools: body.tools,
+    tools: body.tools ?? [],
     systemInstruction: body.systemInstruction
       ? toSdkContent(body.systemInstruction)
       : undefined,
@@ -578,6 +694,7 @@ async function geminiGenerateContentViaSdkStream({
     endpointBaseUrl: normalizeGeminiSdkBaseUrl(baseUrl),
     request: summarizeGeminiRequest(body),
   });
+  logGeminiPayload("info", trace, "sdk-stream:request-body", sdkRequest);
 
   try {
     const responseStream = await ai.models.generateContentStream(
@@ -595,13 +712,17 @@ async function geminiGenerateContentViaSdkStream({
       model,
       durationMs: Date.now() - startedAt,
       response: summarizeGeminiResponse(merged),
+      normalizedParts: summarizeGeminiPartsForLog(extractGeminiParts(merged)),
     });
+    logGeminiPayload("info", trace, "sdk-stream:response-body", merged);
 
     return merged;
   } catch (error) {
     logGemini("error", trace, "sdk-stream:error", {
       model,
       durationMs: Date.now() - startedAt,
+      timeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
+      errorName: error instanceof Error ? error.name : typeof error,
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
@@ -630,6 +751,7 @@ async function geminiGenerateContentViaSdkUnary({
     endpointBaseUrl: normalizeGeminiSdkBaseUrl(baseUrl),
     request: summarizeGeminiRequest(body),
   });
+  logGeminiPayload("info", trace, "sdk-unary:request-body", sdkRequest);
 
   try {
     const response = await ai.models.generateContent(
@@ -641,13 +763,17 @@ async function geminiGenerateContentViaSdkUnary({
       model,
       durationMs: Date.now() - startedAt,
       response: summarizeGeminiResponse(normalizedResponse),
+      normalizedParts: summarizeGeminiPartsForLog(extractGeminiParts(normalizedResponse)),
     });
+    logGeminiPayload("info", trace, "sdk-unary:response-body", normalizedResponse);
 
     return normalizedResponse;
   } catch (error) {
     logGemini("error", trace, "sdk-unary:error", {
       model,
       durationMs: Date.now() - startedAt,
+      timeoutMs: GEMINI_REQUEST_TIMEOUT_MS,
+      errorName: error instanceof Error ? error.name : typeof error,
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
@@ -869,6 +995,7 @@ async function geminiGenerateContentViaHttp({
     endpoint: endpoint.replace(/([?&]key=)[^&]+/, "$1***"),
     request: summarizeGeminiRequest(body),
   });
+  logGeminiPayload("info", trace, "request:body", body);
 
   let response: UndiciResponse;
 
@@ -877,10 +1004,13 @@ async function geminiGenerateContentViaHttp({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
+        "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
       cache: "no-store",
       dispatcher: geminiDispatcher,
+      // Increase timeout to 10 minutes to prevent premature fetch failures
       signal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
@@ -920,6 +1050,7 @@ async function geminiGenerateContentViaHttp({
       durationMs: Date.now() - startedAt,
       details: payload,
     });
+    logGeminiPayload("warn", trace, "request:http-error-body", payload);
     throw new GeminiApiError(
       formatGeminiHttpError(response.status, payload),
       {
@@ -933,6 +1064,7 @@ async function geminiGenerateContentViaHttp({
     logGemini("warn", trace, "request:empty-response", {
       model,
       durationMs: Date.now() - startedAt,
+      rawTextPreview: previewText(rawText, 2000),
     });
     throw new GeminiApiError("Gemini returned an empty response.");
   }
@@ -957,7 +1089,9 @@ async function geminiGenerateContentViaHttp({
     model,
     durationMs: Date.now() - startedAt,
     response: summarizeGeminiResponse(responsePayload),
+    normalizedParts: summarizeGeminiPartsForLog(extractGeminiParts(responsePayload)),
   });
+  logGeminiPayload("info", trace, "request:response-body", responsePayload);
 
   return responsePayload;
 }
@@ -976,6 +1110,17 @@ export async function geminiGenerateContent({
   trace?: GeminiTraceContext;
 }) {
   const useStreamMethod = shouldUseStreamGenerateContent(model, body);
+  const useHttpUnaryForImage = shouldUseHttpUnaryForImage(model, body);
+
+  if (useHttpUnaryForImage) {
+    return geminiGenerateContentViaHttp({
+      baseUrl,
+      apiKey,
+      model,
+      body,
+      trace,
+    });
+  }
 
   try {
     return useStreamMethod
@@ -1177,11 +1322,19 @@ export async function resolveGeminiPartToBase64Image(
 ): Promise<{ mimeType: string; data: string } | null> {
   const inline = extractGeminiInlineData(part);
   if (inline?.data) {
+    logGemini("info", trace, "image-part:resolved-inline", {
+      mimeType: inline.mimeType,
+      bytes: inline.data.length,
+    });
     return { mimeType: inline.mimeType, data: inline.data };
   }
 
   const inlineUrl = extractGeminiInlineImageUrl(part);
   if (inlineUrl) {
+    logGemini("info", trace, "image-part:resolve-inline-url", {
+      url: summarizeImageUrl(inlineUrl.url),
+      mimeType: inlineUrl.mimeType,
+    });
     return fetchGeminiImageUrlToBase64(inlineUrl.url, {
       apiKey,
       mimeTypeHint: inlineUrl.mimeType,
@@ -1191,6 +1344,10 @@ export async function resolveGeminiPartToBase64Image(
 
   const fileRef = extractGeminiFileUriPart(part);
   if (fileRef) {
+    logGemini("info", trace, "image-part:resolve-file-url", {
+      url: summarizeImageUrl(fileRef.uri),
+      mimeType: fileRef.mimeType,
+    });
     return fetchGeminiImageUrlToBase64(fileRef.uri, {
       apiKey,
       mimeTypeHint: fileRef.mimeType,
@@ -1200,12 +1357,17 @@ export async function resolveGeminiPartToBase64Image(
 
   const textImageUrl = extractGeminiTextImageUrl(part);
   if (textImageUrl) {
+    logGemini("info", trace, "image-part:resolve-text-url", {
+      url: summarizeImageUrl(textImageUrl),
+    });
     return fetchGeminiImageUrlToBase64(textImageUrl, {
       apiKey,
       trace,
     });
   }
 
+  logGemini("warn", trace, "image-part:unsupported", {
+    part: summarizeGeminiPart(part, 0),
+  });
   return null;
 }
-

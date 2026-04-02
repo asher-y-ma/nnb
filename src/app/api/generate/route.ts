@@ -1,10 +1,11 @@
 import { z } from "zod";
 
+import { isFlowStudioImageModel } from "@/config/studio";
 import {
   generateStudioAssets,
   getGenerationTotals,
 } from "@/lib/gemini/client";
-import { isFlowStudioImageModel } from "@/config/studio";
+import { GeminiApiError } from "@/lib/gemini/rest-client";
 import type {
   DetailFocusId,
   GenerateStudioResponse,
@@ -60,8 +61,49 @@ function createJobMeta(payload: z.infer<typeof payloadSchema>): Pick<
   };
 }
 
-function streamEvent(controller: ReadableStreamDefaultController<Uint8Array>, event: GenerateStudioStreamEvent) {
+function streamEvent(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  event: GenerateStudioStreamEvent,
+) {
   controller.enqueue(new TextEncoder().encode(`${JSON.stringify(event)}\n`));
+}
+
+function stringifyErrorDetails(details: unknown) {
+  if (!details) {
+    return "";
+  }
+
+  try {
+    const text = JSON.stringify(details);
+    return text.length > 4000 ? `${text.slice(0, 4000)}...[truncated]` : text;
+  } catch {
+    return String(details);
+  }
+}
+
+function formatErrorForClient(error: unknown, requestId: string) {
+  const message = error instanceof Error ? error.message : "生成失败";
+  const status =
+    error instanceof GeminiApiError && typeof error.status === "number"
+      ? error.status
+      : 500;
+  const details =
+    error instanceof GeminiApiError ? stringifyErrorDetails(error.details) : "";
+
+  return {
+    status,
+    details,
+    message: details
+      ? `${message}\n\nRequest ID: ${requestId}\nDetails: ${details}`
+      : `${message}\n\nRequest ID: ${requestId}`,
+  };
+}
+
+function sanitizePayloadForLog(payload: z.infer<typeof payloadSchema>) {
+  return {
+    ...payload,
+    apiKey: "***",
+  };
 }
 
 export async function POST(request: Request) {
@@ -111,9 +153,10 @@ export async function POST(request: Request) {
 
   console.info(`[studio-api:${requestId}] request:start`, {
     mode,
-    upstreamMethod: isFlowStudioImageModel(normalizedPayload.imageModel)
-      ? "generateContentStream"
-      : "generateContent",
+    upstreamMethod:
+      totals.images > 0 && isFlowStudioImageModel(normalizedPayload.imageModel)
+        ? "generateContentStream"
+        : "generateContent",
     module: normalizedPayload.module,
     imageModel: normalizedPayload.imageModel,
     textModel: normalizedPayload.textModel,
@@ -126,6 +169,7 @@ export async function POST(request: Request) {
     sourceImages: sourceImages.length,
     modelImages: modelImages.length,
     innerLayerImages: innerLayerImages.length,
+    payload: sanitizePayloadForLog(payload),
   });
 
   if (responseMode !== "stream") {
@@ -159,22 +203,24 @@ export async function POST(request: Request) {
         },
       } satisfies GenerateStudioResponse);
     } catch (error) {
+      const formattedError = formatErrorForClient(error, requestId);
       console.error(`[studio-api:${requestId}] request:error`, {
         mode,
-        error: error instanceof Error ? error.message : String(error),
+        error: formattedError.message,
+        details: formattedError.details,
       });
 
       return Response.json(
         {
           ok: false,
-          error: error instanceof Error ? error.message : "生成失败",
+          error: formattedError.message,
+          requestId,
+          details: formattedError.details,
         },
-        { status: 500 },
+        { status: formattedError.status },
       );
     } finally {
-      console.info(`[studio-api:${requestId}] request:finish`, {
-        mode,
-      });
+      console.info(`[studio-api:${requestId}] request:finish`, { mode });
     }
   }
 
@@ -220,19 +266,19 @@ export async function POST(request: Request) {
           },
         });
       } catch (error) {
+        const formattedError = formatErrorForClient(error, requestId);
         console.error(`[studio-api:${requestId}] request:error`, {
           mode,
-          error: error instanceof Error ? error.message : String(error),
+          error: formattedError.message,
+          details: formattedError.details,
         });
 
         streamEvent(controller, {
           type: "error",
-          error: error instanceof Error ? error.message : "生成失败",
+          error: formattedError.message,
         });
       } finally {
-        console.info(`[studio-api:${requestId}] request:finish`, {
-          mode,
-        });
+        console.info(`[studio-api:${requestId}] request:finish`, { mode });
         controller.close();
       }
     },

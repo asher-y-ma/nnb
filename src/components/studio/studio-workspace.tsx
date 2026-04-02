@@ -80,6 +80,12 @@ interface RestoreNotice {
   message: string;
 }
 
+interface GenerateErrorPayload {
+  error?: string;
+  requestId?: string;
+  details?: string;
+}
+
 function resolveImageModelByQualityMode(
   qualityMode: QualityMode,
   settings: ReturnType<typeof useSettingsStore.getState>,
@@ -221,6 +227,7 @@ export function StudioWorkspace({
   const [result, setResult] = useState<StudioJobResult | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
   const [generationTotals, setGenerationTotals] =
     useState<GenerationProgressTotals | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -371,6 +378,7 @@ function applyTemplate(template: string) {
     setResult(null);
     setGenerationTotals(null);
     setIsGenerating(false);
+    setRequestError(null);
     setLightboxIndex(null);
     toast.message("当前工作台已清空。");
   }
@@ -394,6 +402,7 @@ function applyTemplate(template: string) {
     setResult(null);
     setGenerationTotals(null);
     setIsGenerating(false);
+    setRequestError(null);
     setLightboxIndex(null);
   }, [activeModule, settings.defaultAspectRatio, settings.defaultImageSize]);
 
@@ -434,6 +443,7 @@ function applyTemplate(template: string) {
       setResult(null);
       setGenerationTotals(null);
       setIsGenerating(false);
+      setRequestError(null);
       setLightboxIndex(null);
 
       const storedAssets = job.inputAssetIds.length
@@ -683,6 +693,7 @@ function applyTemplate(template: string) {
 
     setResult(null);
     setLightboxIndex(null);
+    setRequestError(null);
 
     startTransition(async () => {
       try {
@@ -691,9 +702,7 @@ function applyTemplate(template: string) {
           body: formData,
         });
 
-        const payload = (await response.json()) as GenerateStudioResponse & {
-          error?: string;
-        };
+        const payload = (await response.json()) as GenerateStudioResponse & GenerateErrorPayload;
 
         if (!response.ok || !payload.ok) {
           throw new Error(payload.error ?? "鐢熸垚澶辫触");
@@ -703,7 +712,9 @@ function applyTemplate(template: string) {
         await persistResult(payload.job);
         toast.success("生成完成，记得尽快下载结果图。");
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "生成失败");
+        const message = error instanceof Error ? error.message : "生成失败";
+        setRequestError(message);
+        toast.error(message);
       }
     });
   }
@@ -745,6 +756,7 @@ function applyTemplate(template: string) {
     setGenerationTotals(null);
     setLightboxIndex(null);
     setIsGenerating(true);
+    setRequestError(null);
 
     try {
       const response = await fetch("/api/generate", {
@@ -757,7 +769,7 @@ function applyTemplate(template: string) {
 
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as
-          | (GenerateStudioResponse & { error?: string })
+          | (GenerateStudioResponse & GenerateErrorPayload)
           | null;
         throw new Error(payload?.error ?? "鐢熸垚澶辫触");
       }
@@ -835,7 +847,9 @@ function applyTemplate(template: string) {
       await persistResult(completedJob);
       toast.success("生成完成，记得尽快下载结果图。");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "生成失败");
+      const message = error instanceof Error ? error.message : "生成失败";
+      setRequestError(message);
+      toast.error(message);
     } finally {
       setIsGenerating(false);
     }
@@ -879,6 +893,7 @@ function applyTemplate(template: string) {
     setGenerationTotals(null);
     setLightboxIndex(null);
     setIsGenerating(true);
+    setRequestError(null);
 
     try {
       let completedJob: StudioJobResult | null = null;
@@ -895,7 +910,7 @@ function applyTemplate(template: string) {
 
         if (!streamResponse.ok) {
           const payload = (await streamResponse.json().catch(() => null)) as
-            | (GenerateStudioResponse & { error?: string })
+            | (GenerateStudioResponse & GenerateErrorPayload)
             | null;
           throw new Error(payload?.error ?? "鐢熸垚澶辫触");
         }
@@ -980,6 +995,8 @@ function applyTemplate(template: string) {
 
         const fallbackPayload = (await fallbackResponse.json()) as GenerateStudioResponse & {
           error?: string;
+          requestId?: string;
+          details?: string;
         };
 
         if (!fallbackResponse.ok || !fallbackPayload.ok) {
@@ -1000,7 +1017,9 @@ function applyTemplate(template: string) {
       await persistResult(completedJob);
       toast.success("生成完成，记得尽快下载结果图。");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "生成失败");
+      const message = error instanceof Error ? error.message : "生成失败";
+      setRequestError(message);
+      toast.error(message);
     } finally {
       setIsGenerating(false);
     }
@@ -1099,6 +1118,18 @@ function applyTemplate(template: string) {
           )}
         >
           {restoreNotice.message}
+        </section>
+      ) : null}
+
+      {requestError ? (
+        <section className="rounded-[26px] border border-[#efc2c2] bg-[#fff3f1] px-5 py-4 text-sm leading-7 text-[#8b2f2f]">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-1 size-4 shrink-0" />
+            <div className="whitespace-pre-wrap break-words">
+              <p className="font-medium">本次生成失败</p>
+              <p className="mt-1">{requestError}</p>
+            </div>
+          </div>
         </section>
       ) : null}
 

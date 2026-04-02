@@ -27,6 +27,7 @@ import {
   extractGeminiText,
   geminiGenerateContent,
   resolveGeminiPartToBase64Image,
+  summarizeGeminiPartsForLog,
   type GeminiTraceContext,
   type GeminiRequestPart,
 } from "@/lib/gemini/rest-client";
@@ -406,7 +407,7 @@ async function buildImageInputParts({
   modelImages: File[];
   innerLayerImages: File[];
 }) {
-  const parts: GeminiRequestPart[] = [createTextPart(planPrompt)];
+  const parts: GeminiRequestPart[] = [];
 
   if (payload.module === "style-clone") {
     parts.push(
@@ -422,6 +423,7 @@ async function buildImageInputParts({
       )),
     );
 
+    parts.push(createTextPart(planPrompt));
     return parts;
   }
 
@@ -451,6 +453,7 @@ async function buildImageInputParts({
       );
     }
 
+    parts.push(createTextPart(planPrompt));
     return parts;
   }
 
@@ -462,6 +465,7 @@ async function buildImageInputParts({
       )),
     );
 
+    parts.push(createTextPart(planPrompt));
     return parts;
   }
 
@@ -481,6 +485,7 @@ async function buildImageInputParts({
     );
   }
 
+  parts.push(createTextPart(planPrompt));
   return parts;
 }
 
@@ -656,9 +661,10 @@ async function generateSingleImagePlan({
           }),
         ),
       ],
+      tools: [],
       generationConfig: {
         candidateCount: 1,
-        responseModalities: ["TEXT", "IMAGE"],
+        responseModalities: ["IMAGE"],
         imageConfig: {
           aspectRatio: genAspectRatio,
           imageSize: genImageSize,
@@ -669,6 +675,13 @@ async function generateSingleImagePlan({
 
   const notesDelta = extractGeminiText(imageResponse).trim();
   const parts = extractGeminiParts(imageResponse);
+  const partSummary = summarizeGeminiPartsForLog(parts);
+  console.info(`[gemini:${trace?.requestId ?? "no-trace"}] image:${payload.module} parsed-response`, {
+    model: payload.imageModel,
+    planLabel: plan.label,
+    notesPreview: notesDelta ? notesDelta.slice(0, 240) : "",
+    ...partSummary,
+  });
   const resolvedImages = await Promise.all(
     parts.map((part) => resolveGeminiPartToBase64Image(part, payload.apiKey, trace)),
   );
@@ -682,6 +695,25 @@ async function generateSingleImagePlan({
       caption: index > 0 ? `${plan.label} ${index + 1}` : plan.label,
       description: plan.description,
     })) satisfies StudioImageResult[];
+
+  console.info(`[gemini:${trace?.requestId ?? "no-trace"}] image:${payload.module} parsed-images`, {
+    model: payload.imageModel,
+    planLabel: plan.label,
+    partCount: parts.length,
+    resolvedImageCount: images.length,
+    resolutionAttempts: resolvedImages.length,
+    resolutionFailures: resolvedImages.filter((resolved) => !resolved).length,
+  });
+
+  if (images.length === 0) {
+    console.warn(`[gemini:${trace?.requestId ?? "no-trace"}] image:${payload.module} no-images-after-parse`, {
+      model: payload.imageModel,
+      planLabel: plan.label,
+      promptPreview: plan.prompt.slice(0, 280),
+      notesPreview: notesDelta ? notesDelta.slice(0, 280) : "",
+      ...partSummary,
+    });
+  }
 
   return {
     images,
@@ -959,6 +991,19 @@ export async function generateStudioAssets({
   });
 
   if (shouldGenerateImages && images.length === 0) {
+    console.error(`[gemini:${trace?.requestId ?? "no-trace"}] image:${payload.module} generation-finished-without-images`, {
+      model: payload.imageModel,
+      totals,
+      generatedCopyResults: copyResults.length,
+      promptPreview: promptBundle.slice(0, 320),
+      hasStyleBrief: Boolean(styleBrief),
+      hasGarmentBrief: Boolean(garmentBrief),
+      productImages: productImages.length,
+      referenceImages: referenceImages.length,
+      sourceImages: sourceImages.length,
+      modelImages: modelImages.length,
+      innerLayerImages: innerLayerImages.length,
+    });
     throw new Error("Gemini 未返回图片结果，请调整提示词、检查模型能力或稍后重试。");
   }
 
