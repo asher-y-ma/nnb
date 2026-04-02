@@ -14,6 +14,7 @@ import type {
 } from "@/types/studio";
 
 export const runtime = "nodejs";
+export const maxDuration = 600;
 
 const payloadSchema = z.object({
   module: z.enum(["main", "detail", "style-clone", "retouch", "fashion", "commerce"]),

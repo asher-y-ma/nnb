@@ -11,6 +11,8 @@ import {
   isFlowStudioImageModel,
 } from "@/config/studio";
 
+export const GEMINI_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+
 const geminiDispatcher: Dispatcher | undefined =
   process.env.HTTP_PROXY ||
   process.env.HTTPS_PROXY ||
@@ -549,6 +551,7 @@ async function createGeminiSdkClient(baseUrl: string | undefined, apiKey: string
     ...(sdkFetch ? { fetch: sdkFetch } : {}),
     httpOptions: {
       baseUrl: normalizeGeminiSdkBaseUrl(baseUrl),
+      timeout: GEMINI_REQUEST_TIMEOUT_MS,
     },
   });
 }
@@ -878,6 +881,7 @@ async function geminiGenerateContentViaHttp({
       body: JSON.stringify(body),
       cache: "no-store",
       dispatcher: geminiDispatcher,
+      signal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     logGemini("error", trace, "request:network-error", {
@@ -1116,6 +1120,7 @@ export async function fetchGeminiImageUrlToBase64(
       redirect: "follow",
       cache: "no-store",
       dispatcher: geminiDispatcher,
+      signal: AbortSignal.timeout(GEMINI_REQUEST_TIMEOUT_MS),
     });
   } catch {
     logGemini("warn", options?.trace, "image-url:network-error", {
