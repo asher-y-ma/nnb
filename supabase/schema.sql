@@ -13,7 +13,7 @@ create table if not exists public.provider_profiles (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   provider_type text not null default 'gemini',
-  base_url text not null default 'https://mccum.com/',
+  base_url text not null default 'https://newapi.dituhuoke.com/',
   api_key_ciphertext text,
   default_image_model text not null default 'gemini-3.1-flash-image-preview',
   hq_image_model text not null default 'gemini-3-pro-image-preview',
@@ -25,7 +25,7 @@ create table if not exists public.provider_profiles (
 );
 
 alter table public.provider_profiles
-  add column if not exists base_url text not null default 'https://mccum.com/';
+  add column if not exists base_url text not null default 'https://newapi.dituhuoke.com/';
 
 alter table public.provider_profiles
   alter column default_image_model set default 'gemini-3.1-flash-image-preview';

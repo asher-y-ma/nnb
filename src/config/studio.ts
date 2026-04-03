@@ -1,6 +1,6 @@
 import type { StudioModuleDefinition } from "@/types/studio";
 
-export const DEFAULT_GEMINI_BASE_URL = "https://mccum.com/";
+export const DEFAULT_GEMINI_BASE_URL = "https://newapi.dituhuoke.com/";
 
 export const DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 export const DEFAULT_GEMINI_HQ_IMAGE_MODEL = "gemini-3-pro-image-preview";
