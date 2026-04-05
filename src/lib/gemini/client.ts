@@ -36,6 +36,7 @@ import type {
   DetailFocusId,
   GenerateStudioStreamEvent,
   GenerationProgressTotals,
+  ImageTextLanguage,
   PlatformTarget,
   StudioImageResult,
   StudioModule,
@@ -59,6 +60,7 @@ interface GenerationPayload {
   imageModel: string;
   textModel: string;
   apiKey: string;
+  imageTextLanguage?: ImageTextLanguage;
 }
 
 interface ImageGenerationPlan {
@@ -518,6 +520,7 @@ function createImagePlans({
         aspectRatio: payload.aspectRatio,
         workflowMode: payload.workflowMode,
         detailFocus: preset,
+        imageTextLanguage: payload.imageTextLanguage,
       }),
     }));
   }
@@ -561,6 +564,7 @@ function createImagePlans({
       hasInnerLayerImage: false,
       styleBrief,
       garmentBrief,
+      imageTextLanguage: payload.imageTextLanguage,
     }),
   }));
 }
@@ -878,6 +882,7 @@ export async function generateStudioAssets({
                 hasModelImage: modelImages.length > 0,
                 hasInnerLayerImage: innerLayerImages.length > 0,
                 garmentBrief,
+                imageTextLanguage: payload.imageTextLanguage,
               })
             : payload.module === "style-clone"
               ? buildImagePrompt({
@@ -889,6 +894,7 @@ export async function generateStudioAssets({
                   aspectRatio: payload.aspectRatio,
                   workflowMode: payload.workflowMode,
                   styleBrief,
+                  imageTextLanguage: payload.imageTextLanguage,
                 })
               : plan.prompt,
       }))

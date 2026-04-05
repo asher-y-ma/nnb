@@ -2,6 +2,10 @@ import { z } from "zod";
 
 import { isFlowStudioImageModel } from "@/config/studio";
 import {
+  DEFAULT_IMAGE_TEXT_LANGUAGE,
+  IMAGE_TEXT_LANGUAGE_CODES,
+} from "@/lib/studio/image-text-languages";
+import {
   generateStudioAssets,
   getGenerationTotals,
 } from "@/lib/gemini/client";
@@ -32,6 +36,9 @@ const payloadSchema = z.object({
   garmentCategory: z.string().optional(),
   workflowMode: z.string().optional(),
   detailFocusIds: z.array(z.string()).optional(),
+  imageTextLanguage: z
+    .enum(IMAGE_TEXT_LANGUAGE_CODES)
+    .default(DEFAULT_IMAGE_TEXT_LANGUAGE),
   imageModel: z.string().min(1),
   textModel: z.string().min(1),
   apiKey: z.string().min(1, "缺少 Gemini API Key"),

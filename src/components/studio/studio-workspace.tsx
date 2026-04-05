@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import {
   AlertTriangle,
@@ -34,6 +34,10 @@ import {
   STUDIO_NAV_ITEMS,
 } from "@/config/studio";
 import {
+  DEFAULT_IMAGE_TEXT_LANGUAGE,
+  IMAGE_TEXT_LANGUAGE_OPTIONS,
+} from "@/lib/studio/image-text-languages";
+import {
   DETAIL_FOCUS_PRESETS,
   FASHION_GARMENT_PRESETS,
   MODULE_PROMPT_TEMPLATES,
@@ -62,6 +66,7 @@ import type {
   GenerateStudioStreamEvent,
   GenerationProgressTotals,
   ImageSize,
+  ImageTextLanguage,
   LocalAssetRecord,
   LocalJobRecord,
   PlatformTarget,
@@ -222,6 +227,9 @@ export function StudioWorkspace({
   const [imageSize, setImageSize] = useState<ImageSize>(settings.defaultImageSize);
   const [count, setCount] = useState(1);
   const [batchCount, setBatchCount] = useState(3);
+  const [imageTextLanguage, setImageTextLanguage] = useState<ImageTextLanguage>(
+    DEFAULT_IMAGE_TEXT_LANGUAGE,
+  );
   const [qualityMode, setQualityMode] = useState<QualityMode>("speed");
   const [restoreNotice, setRestoreNotice] = useState<RestoreNotice | null>(null);
   const [result, setResult] = useState<StudioJobResult | null>(null);
@@ -372,6 +380,7 @@ function applyTemplate(template: string) {
     setImageSize(settings.defaultImageSize);
     setCount(1);
     setBatchCount(3);
+    setImageTextLanguage(DEFAULT_IMAGE_TEXT_LANGUAGE);
     setQualityMode("speed");
     setWorkflowMode(getDefaultWorkflowMode(activeModule));
     setRestoreNotice(null);
@@ -396,6 +405,7 @@ function applyTemplate(template: string) {
     setImageSize(settings.defaultImageSize);
     setCount(1);
     setBatchCount(3);
+    setImageTextLanguage(DEFAULT_IMAGE_TEXT_LANGUAGE);
     setQualityMode("speed");
     setWorkflowMode(getDefaultWorkflowMode(activeModule));
     setRestoreNotice(null);
@@ -439,6 +449,7 @@ function applyTemplate(template: string) {
       setPlatform(job.platform);
       setCount(job.imageCount ?? 1);
       setBatchCount(job.batchCount ?? 3);
+      setImageTextLanguage(job.imageTextLanguage ?? DEFAULT_IMAGE_TEXT_LANGUAGE);
       setQualityMode(job.qualityMode ?? "speed");
       setResult(null);
       setGenerationTotals(null);
@@ -641,6 +652,7 @@ function applyTemplate(template: string) {
       imageCount: expectedImageCount,
       batchCount,
       qualityMode,
+      imageTextLanguage,
       inputAssetIds: inputAssetRecords.map((asset) => asset.id),
       outputAssetIds: outputAssetRecords.map((asset) => asset.id),
       notes: job.notes,
@@ -678,6 +690,7 @@ function applyTemplate(template: string) {
       tone,
       garmentCategory,
       detailFocusIds,
+      imageTextLanguage,
       imageModel: resolveImageModelByQualityMode(qualityMode, settings),
       textModel: settings.defaultTextModel,
       apiKey: settings.apiKey,
@@ -705,7 +718,7 @@ function applyTemplate(template: string) {
         const payload = (await response.json()) as GenerateStudioResponse & GenerateErrorPayload;
 
         if (!response.ok || !payload.ok) {
-          throw new Error(payload.error ?? "鐢熸垚澶辫触");
+          throw new Error(payload.error ?? "生成失败");
         }
 
         setResult(payload.job);
@@ -739,6 +752,7 @@ function applyTemplate(template: string) {
       tone,
       garmentCategory,
       detailFocusIds,
+      imageTextLanguage,
       imageModel: resolveImageModelByQualityMode(qualityMode, settings),
       textModel: settings.defaultTextModel,
       apiKey: settings.apiKey,
@@ -771,7 +785,7 @@ function applyTemplate(template: string) {
         const payload = (await response.json().catch(() => null)) as
           | (GenerateStudioResponse & GenerateErrorPayload)
           | null;
-        throw new Error(payload?.error ?? "鐢熸垚澶辫触");
+        throw new Error(payload?.error ?? "生成失败");
       }
 
       let completedJob: StudioJobResult | null = null;
@@ -876,6 +890,7 @@ function applyTemplate(template: string) {
       tone,
       garmentCategory,
       detailFocusIds,
+      imageTextLanguage,
       imageModel: resolveImageModelByQualityMode(qualityMode, settings),
       textModel: settings.defaultTextModel,
       apiKey: settings.apiKey,
@@ -912,7 +927,7 @@ function applyTemplate(template: string) {
           const payload = (await streamResponse.json().catch(() => null)) as
             | (GenerateStudioResponse & GenerateErrorPayload)
             | null;
-          throw new Error(payload?.error ?? "鐢熸垚澶辫触");
+          throw new Error(payload?.error ?? "生成失败");
         }
 
         await readStreamEvents(streamResponse, async (event) => {
@@ -1376,6 +1391,26 @@ function applyTemplate(template: string) {
                     </option>
                   ))}
                 </select>
+              </label>
+
+              <label className="grid gap-2 md:col-span-2">
+                <span className="text-sm font-medium text-[#2e271d]">画面中文字语言</span>
+                <select
+                  value={imageTextLanguage}
+                  onChange={(event) =>
+                    setImageTextLanguage(event.target.value as ImageTextLanguage)
+                  }
+                  className="h-12 rounded-2xl border border-black/10 bg-white px-4 text-sm outline-none focus:border-[#caa64c]"
+                >
+                  {IMAGE_TEXT_LANGUAGE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-xs leading-5 text-[#7b6b56]">
+                  仅当你在提示词里明确要求画面出现可读文字时，模型才应写字；未要求则不要擅自加字。需要写字时使用此处所选语言。
+                </span>
               </label>
 
               {activeModule === "commerce" ? (

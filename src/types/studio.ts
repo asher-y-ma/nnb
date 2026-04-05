@@ -1,3 +1,7 @@
+import type { ImageTextLanguage } from "@/lib/studio/image-text-languages";
+
+export type { ImageTextLanguage };
+
 export const STUDIO_MODULES = [
   "main",
   "detail",
@@ -127,6 +131,8 @@ export interface LocalJobRecord {
   imageCount?: number;
   batchCount?: number;
   qualityMode?: QualityMode;
+  /** 生图时画面中新增可读文字的书写语言（与下拉一致）。 */
+  imageTextLanguage?: ImageTextLanguage;
   inputAssetIds: string[];
   outputAssetIds: string[];
   notes?: string;

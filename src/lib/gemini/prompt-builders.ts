@@ -1,9 +1,13 @@
 import {
+  getImageTextLanguageLabel,
+  DEFAULT_IMAGE_TEXT_LANGUAGE,
+} from "@/lib/studio/image-text-languages";
+import {
   COMMERCE_PLATFORM_GUIDES,
   DETAIL_FOCUS_PRESETS,
   type DetailFocusPreset,
 } from "@/lib/studio/workflow-presets";
-import type { PlatformTarget, StudioModule } from "@/types/studio";
+import type { ImageTextLanguage, PlatformTarget, StudioModule } from "@/types/studio";
 
 export interface StyleReferenceBrief {
   summary: string;
@@ -39,6 +43,8 @@ interface PromptContext {
   detailFocus?: DetailFocusPreset;
   styleBrief?: StyleReferenceBrief | null;
   garmentBrief?: GarmentReferenceBrief | null;
+  /** 画面中若出现用户要求的新增可读文字时应使用的书写语言。 */
+  imageTextLanguage?: ImageTextLanguage;
 }
 
 const moduleNames: Record<StudioModule, string> = {
@@ -56,6 +62,19 @@ function joinList(items?: string[]) {
   }
 
   return items.join("、");
+}
+
+function buildImageTextLanguageRules(imageTextLanguage?: ImageTextLanguage) {
+  const code = imageTextLanguage ?? DEFAULT_IMAGE_TEXT_LANGUAGE;
+  const label = getImageTextLanguageLabel(code);
+
+  return [
+    "【画面可读文字规则（硬性）】",
+    `用户为「当画面需要出现可读文字时」指定的书写语言为：${label}（${code}）。`,
+    "仅当用户在「核心要求」「额外要求」或商品事实等输入中明确要求在画面里加入标题、卖点字、标签、口号、装饰文案、价格条、促销字、水印式文案等可读内容时，才允许在图像中绘制这类新增文字。",
+    "若用户没有明确要求在画面中加入任何可读文字，则严禁擅自添加标语、卖点字、假水印、参数说明、无关装饰字等。产品/包装上原有的 logo、洗标、吊牌印字等如在参考图中已存在，应如实保留，不视为「新增画面文字」。",
+    `当且仅当需要绘制上述「新增画面文字」时，必须使用 ${label}，拼写与语法须正确、自然，并符合该语言常见排版习惯；不要擅自改用其他语言，除非用户明确要求双语或多语。`,
+  ].join("\n");
 }
 
 function getMainWorkflowPrompt(workflowMode?: string) {
@@ -236,9 +255,7 @@ export function buildImagePrompt(context: PromptContext) {
     sections.push(`额外要求：${context.extraNotes.trim()}`);
   }
 
-  sections.push(
-    "请只输出最终可用结果，不要在图像里加入多余水印、参数说明或无关文字，除非用户明确要求。",
-  );
+  sections.push(buildImageTextLanguageRules(context.imageTextLanguage));
 
   return sections.filter(Boolean).join("\n");
 }
