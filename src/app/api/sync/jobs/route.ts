@@ -13,7 +13,7 @@ const jobSchema = z.object({
   prompt: z.string().default(""),
   aspectRatio: z.string().default("3:4"),
   imageSize: z.string().default("1K"),
-  platform: z.string().default("通用电商"),
+  platform: z.string().default("小红书"),
   resultCount: z.number().int().min(0),
   notes: z.string().optional(),
 });

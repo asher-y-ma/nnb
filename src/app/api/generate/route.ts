@@ -27,7 +27,7 @@ const payloadSchema = z.object({
   prompt: z.string().default(""),
   extraNotes: z.string().optional(),
   productFacts: z.string().optional(),
-  platform: z.string().default("通用电商"),
+  platform: z.string().default("小红书"),
   aspectRatio: z.string().default("3:4"),
   imageSize: z.string().default("1K"),
   count: z.coerce.number().min(1).max(4).default(1),

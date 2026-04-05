@@ -61,7 +61,7 @@ import { ASPECT_RATIOS, IMAGE_SIZES, PLATFORM_TARGETS } from "@/types/studio";
 
 const DEFAULT_TONE = "专业但不生硬";
 const DEFAULT_GARMENT_CATEGORY = "上衣";
-const DEFAULT_PLATFORM: PlatformTarget = "通用电商";
+const DEFAULT_PLATFORM: PlatformTarget = "小红书";
 
 interface RestoreNotice {
   tone: "success" | "warning";

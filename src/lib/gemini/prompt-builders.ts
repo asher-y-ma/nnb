@@ -338,6 +338,7 @@ export function buildCommerceCopyPrompt({
     `语气要求：${tone}。`,
     workflowMode ? `工作模式：${workflowMode}。` : "",
     `平台提示：${COMMERCE_PLATFORM_GUIDES[platform]}`,
+    "重要：body 字段必须严格按照小红书的排版格式输出，包含吸引人的标题（带emoji）、分段清晰的正文（使用emoji作为列表符号）、段落间留空行，并且文末不需要再写标签（标签会单独放在 tags 字段中）。",
     productFacts?.trim() ? `商品事实：${productFacts.trim()}` : "",
     prompt?.trim() ? `创意要求：${prompt.trim()}` : "",
     "请输出 JSON，包含以下字段：title、body、tags、cta、openingLine、coverText、sellingPoints、shotList、storyboard。",

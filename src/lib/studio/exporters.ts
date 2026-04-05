@@ -81,7 +81,7 @@ export function buildCopyTextBundle(title: string, copyResults: CommerceCopyResu
       sections.push(`正文：\n${copyItem.body}`);
 
       if (copyItem.tags.length) {
-        sections.push(`标签：${copyItem.tags.map((tag) => `#${tag}`).join(" ")}`);
+        sections.push(`${copyItem.tags.map((tag) => `#${tag}`).join(" ")}`);
       }
 
       if (copyItem.shotList?.length) {
