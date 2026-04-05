@@ -1,31 +1,21 @@
 "use client";
 
-import {
-  AlertTriangle,
-  Copy,
-  Download,
-  FileJson2,
-  FileText,
-  Images,
-  Layers3,
-  LoaderCircle,
-  RotateCcw,
-  Sparkles,
-  WandSparkles,
-} from "lucide-react";
+import { AlertTriangle, Images, Layers3, LoaderCircle, RotateCcw, Sparkles, WandSparkles } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useSupabaseAuth } from "@/components/providers/auth-provider";
 import { UploadCard } from "@/components/shared/upload-card";
-import { ImageLightbox } from "@/components/studio/image-lightbox";
 import {
-  CopyResultsSection,
   InspirationBoard,
-  ResultImageGrid,
   SelectableCard,
 } from "@/components/studio/workspace-sections";
+import {
+  StudioGenerationTaskCard,
+  type StudioGenerationSnapshot,
+  type StudioGenerationTask,
+} from "@/components/studio/studio-generation-task-card";
 import {
   getQualityModeModel,
   getSupportedStudioAspectRatios,
@@ -45,12 +35,6 @@ import {
   getDefaultWorkflowMode,
 } from "@/lib/studio/workflow-presets";
 import {
-  buildCopyJsonBundle,
-  buildCopyTextBundle,
-  downloadAssetBundle,
-  downloadBlob,
-} from "@/lib/studio/exporters";
-import {
   createInputAssetRecords,
   groupInputAssetFiles,
 } from "@/lib/studio/local-assets";
@@ -64,7 +48,6 @@ import type {
   DetailFocusId,
   GenerateStudioResponse,
   GenerateStudioStreamEvent,
-  GenerationProgressTotals,
   ImageSize,
   ImageTextLanguage,
   LocalAssetRecord,
@@ -197,6 +180,69 @@ function isFashionModelRequired(workflowMode: string) {
   return workflowMode !== "服装平铺";
 }
 
+const MAX_CONCURRENT_GENERATIONS = 5;
+
+function drainGenerationQueue(
+  prev: StudioGenerationTask[],
+  startedIds: Set<string>,
+): { next: StudioGenerationTask[]; starters: StudioGenerationTask[] } {
+  const running = prev.filter((t) => t.status === "running").length;
+  let slots = MAX_CONCURRENT_GENERATIONS - running;
+  const starters: StudioGenerationTask[] = [];
+  const next = prev.map((t) => {
+    if (t.status === "queued" && slots > 0 && !startedIds.has(t.id)) {
+      slots -= 1;
+      startedIds.add(t.id);
+      starters.push({ ...t, status: "running" });
+      return { ...t, status: "running" as const };
+    }
+    return t;
+  });
+  return { next, starters };
+}
+
+function expectedImageCountFromSnapshot(snapshot: StudioGenerationSnapshot): number {
+  const isCommerceCopyOnly =
+    snapshot.module === "commerce" &&
+    (snapshot.workflowMode === "批量文案" || snapshot.workflowMode === "视频预备");
+  if (snapshot.module === "detail") {
+    return Math.max(1, snapshot.detailFocusIds.length);
+  }
+  return isCommerceCopyOnly ? 0 : snapshot.count;
+}
+
+function buildGenerateFormData(snapshot: StudioGenerationSnapshot): FormData {
+  const requestPayload = {
+    module: snapshot.module,
+    baseUrl: snapshot.apiBaseUrl,
+    workflowMode: snapshot.workflowMode,
+    prompt: snapshot.prompt,
+    extraNotes: snapshot.extraNotes,
+    productFacts: snapshot.productFacts,
+    platform: snapshot.platform,
+    aspectRatio: snapshot.aspectRatio,
+    imageSize: snapshot.imageSize,
+    count: snapshot.module === "detail" ? 1 : snapshot.count,
+    batchCount: snapshot.batchCount,
+    tone: snapshot.tone,
+    garmentCategory: snapshot.garmentCategory,
+    detailFocusIds: snapshot.detailFocusIds,
+    imageTextLanguage: snapshot.imageTextLanguage,
+    imageModel: snapshot.imageModel,
+    textModel: snapshot.textModel,
+    apiKey: snapshot.apiKey,
+  };
+
+  const formData = new FormData();
+  formData.set("payload", JSON.stringify(requestPayload));
+  snapshot.productImages.forEach((file) => formData.append("productImages[]", file));
+  snapshot.referenceImages.forEach((file) => formData.append("referenceImages[]", file));
+  snapshot.sourceImages.forEach((file) => formData.append("sourceImages[]", file));
+  snapshot.modelImages.forEach((file) => formData.append("modelImages[]", file));
+  snapshot.innerLayerImages.forEach((file) => formData.append("innerLayerImages[]", file));
+  return formData;
+}
+
 export function StudioWorkspace({
   activeModule = "main",
   restoreJobId,
@@ -232,15 +278,11 @@ export function StudioWorkspace({
   );
   const [qualityMode, setQualityMode] = useState<QualityMode>("speed");
   const [restoreNotice, setRestoreNotice] = useState<RestoreNotice | null>(null);
-  const [result, setResult] = useState<StudioJobResult | null>(null);
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [requestError, setRequestError] = useState<string | null>(null);
-  const [generationTotals, setGenerationTotals] =
-    useState<GenerationProgressTotals | null>(null);
-  const [isPending, startTransition] = useTransition();
-  const deferredResult = result;
-  void isPending;
+  const [tasks, setTasks] = useState<StudioGenerationTask[]>([]);
+  const startedTaskIdsRef = useRef(new Set<string>());
+  const runGenerationTaskRef = useRef<(task: StudioGenerationTask) => void>(() => {});
+
+  const [isButtonCooldown, setIsButtonCooldown] = useState(false);
 
   const resolvedImageModel = useMemo(
     () => resolveImageModelByQualityMode(qualityMode, settings),
@@ -293,51 +335,12 @@ export function StudioWorkspace({
       : isCommerceCopyOnly
         ? 0
         : count;
-  const generationStatusText = useMemo(() => {
-    if (!generationTotals) {
-      return "";
-    }
-
-    const imageProgress = `${result?.images.length ?? 0}/${generationTotals.images} 张图`;
-    const copyProgress = generationTotals.copyResults
-      ? `${result?.copyResults?.length ?? 0}/${generationTotals.copyResults} 组文案`
-      : "";
-
-    return [imageProgress, copyProgress].filter(Boolean).join(" / ");
-  }, [generationTotals, result]);
-
   const selectedDetailFocuses = useMemo(
     () =>
       detailFocusIds
         .map((id) => DETAIL_FOCUS_PRESETS.find((preset) => preset.id === id))
         .filter((preset): preset is (typeof DETAIL_FOCUS_PRESETS)[number] => Boolean(preset)),
     [detailFocusIds],
-  );
-
-  const displayImages = useMemo(
-    () =>
-      result?.images.map((image, index) => ({
-        src: `data:${image.mimeType};base64,${image.base64Data}`,
-        alt: `${result.title}-${index + 1}`,
-        caption: image.caption,
-        description: image.description,
-      })) ?? [],
-    [result],
-  );
-
-  const resultMetrics = useMemo(
-    () => [
-      { label: "图片结果", value: `${deferredResult?.images.length ?? 0} 张` },
-      { label: "文案结果", value: `${deferredResult?.copyResults?.length ?? 0} 组` },
-      {
-        label: activeModule === "detail" ? "详情主题" : "当前模式",
-        value:
-          activeModule === "detail"
-            ? `${selectedDetailFocuses.length || 1} 项`
-            : workflowMode,
-      },
-    ],
-    [activeModule, deferredResult, selectedDetailFocuses.length, workflowMode],
   );
 
   function resetUploads() {
@@ -384,11 +387,8 @@ function applyTemplate(template: string) {
     setQualityMode("speed");
     setWorkflowMode(getDefaultWorkflowMode(activeModule));
     setRestoreNotice(null);
-    setResult(null);
-    setGenerationTotals(null);
-    setIsGenerating(false);
-    setRequestError(null);
-    setLightboxIndex(null);
+    setTasks([]);
+    startedTaskIdsRef.current.clear();
     toast.message("当前工作台已清空。");
   }
 
@@ -409,11 +409,8 @@ function applyTemplate(template: string) {
     setQualityMode("speed");
     setWorkflowMode(getDefaultWorkflowMode(activeModule));
     setRestoreNotice(null);
-    setResult(null);
-    setGenerationTotals(null);
-    setIsGenerating(false);
-    setRequestError(null);
-    setLightboxIndex(null);
+    setTasks([]);
+    startedTaskIdsRef.current.clear();
   }, [activeModule, settings.defaultAspectRatio, settings.defaultImageSize]);
 
   useEffect(() => {
@@ -451,11 +448,6 @@ function applyTemplate(template: string) {
       setBatchCount(job.batchCount ?? 3);
       setImageTextLanguage(job.imageTextLanguage ?? DEFAULT_IMAGE_TEXT_LANGUAGE);
       setQualityMode(job.qualityMode ?? "speed");
-      setResult(null);
-      setGenerationTotals(null);
-      setIsGenerating(false);
-      setRequestError(null);
-      setLightboxIndex(null);
 
       const storedAssets = job.inputAssetIds.length
         ? await getAssetsByIds(job.inputAssetIds)
@@ -580,514 +572,354 @@ function applyTemplate(template: string) {
     return true;
   }
 
-  async function syncJobToSupabase(job: LocalJobRecord) {
-    if (!settings.syncToCloud || !isConfigured || !user) {
-      return;
-    }
-
-    try {
-      await fetch("/api/sync/jobs", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          id: job.id,
-          module: job.module,
-          title: job.title,
-          status: job.status,
-          prompt: job.prompt,
-          aspectRatio: job.aspectRatio,
-          imageSize: job.imageSize,
-          platform: job.platform,
-          resultCount: job.outputAssetIds.length,
-          notes: job.notes,
-        }),
-      });
-    } catch {
-      toast.message("本地已保存，云端元数据可稍后再次同步。");
-    }
-  }
-
-  async function persistResult(job: GenerateStudioResponse["job"]) {
-    const inputAssetRecords = [
-      ...createInputAssetRecords(productImages, "product", job.createdAt),
-      ...createInputAssetRecords(referenceImages, "reference", job.createdAt),
-      ...createInputAssetRecords(sourceImages, "source", job.createdAt),
-      ...createInputAssetRecords(modelImages, "model", job.createdAt),
-      ...createInputAssetRecords(innerLayerImages, "inner", job.createdAt),
-    ];
-
-    const outputAssetRecords: LocalAssetRecord[] = job.images.map((image, index) => {
-      const blob = base64ToBlob(image.base64Data, image.mimeType);
-
-      return {
-        id: image.id,
-        kind: "output",
-        name: `${job.title}-${index + 1}.png`,
-        mimeType: image.mimeType,
-        size: blob.size,
-        blob,
-        createdAt: job.createdAt,
-        caption: image.caption,
-        description: image.description,
-      };
-    });
-
-    const jobRecord: LocalJobRecord = {
-      id: job.id,
-      module: activeModule,
-      title: job.title,
-      status: "completed",
-      prompt,
-      extraNotes,
-      productFacts,
-      tone,
-      garmentCategory,
-      workflowMode,
-      detailFocusIds,
-      aspectRatio,
-      imageSize,
-      platform,
-      imageCount: expectedImageCount,
-      batchCount,
-      qualityMode,
-      imageTextLanguage,
-      inputAssetIds: inputAssetRecords.map((asset) => asset.id),
-      outputAssetIds: outputAssetRecords.map((asset) => asset.id),
-      notes: job.notes,
-      textResults: job.copyResults,
-      createdAt: job.createdAt,
-      updatedAt: job.createdAt,
-    };
-
-    const allAssets = [...inputAssetRecords, ...outputAssetRecords];
-
-    if (allAssets.length > 0) {
-      await saveAssets(allAssets);
-    }
-    await saveJob(jobRecord);
-    await syncJobToSupabase(jobRecord);
-  }
-
-  async function handleGenerate() {
-    if (!validateBeforeGenerate()) {
-      return;
-    }
-
-    const requestPayload = {
-        module: activeModule,
-      baseUrl: settings.apiBaseUrl,
-      workflowMode,
-      prompt,
-      extraNotes,
-      productFacts,
-      platform,
-      aspectRatio,
-      imageSize,
-      count: activeModule === "detail" ? 1 : count,
-      batchCount,
-      tone,
-      garmentCategory,
-      detailFocusIds,
-      imageTextLanguage,
-      imageModel: resolveImageModelByQualityMode(qualityMode, settings),
-      textModel: settings.defaultTextModel,
-      apiKey: settings.apiKey,
-    };
-
-    const formData = new FormData();
-    formData.set("payload", JSON.stringify(requestPayload));
-    productImages.forEach((file) => formData.append("productImages[]", file));
-    referenceImages.forEach((file) => formData.append("referenceImages[]", file));
-    sourceImages.forEach((file) => formData.append("sourceImages[]", file));
-    modelImages.forEach((file) => formData.append("modelImages[]", file));
-    innerLayerImages.forEach((file) => formData.append("innerLayerImages[]", file));
-
-    setResult(null);
-    setLightboxIndex(null);
-    setRequestError(null);
-
-    startTransition(async () => {
-      try {
-        const response = await fetch("/api/generate", {
-          method: "POST",
-          body: formData,
-        });
-
-        const payload = (await response.json()) as GenerateStudioResponse & GenerateErrorPayload;
-
-        if (!response.ok || !payload.ok) {
-          throw new Error(payload.error ?? "生成失败");
-        }
-
-        setResult(payload.job);
-        await persistResult(payload.job);
-        toast.success("生成完成，记得尽快下载结果图。");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "生成失败";
-        setRequestError(message);
-        toast.error(message);
+  const syncJobToSupabase = useCallback(
+    async (job: LocalJobRecord) => {
+      if (!settings.syncToCloud || !isConfigured || !user) {
+        return;
       }
-    });
-  }
-
-  async function handleGenerateStream() {
-    if (!validateBeforeGenerate()) {
-      return;
-    }
-
-    const requestPayload = {
-        module: activeModule,
-      baseUrl: settings.apiBaseUrl,
-      workflowMode,
-      prompt,
-      extraNotes,
-      productFacts,
-      platform,
-      aspectRatio,
-      imageSize,
-      count: activeModule === "detail" ? 1 : count,
-      batchCount,
-      tone,
-      garmentCategory,
-      detailFocusIds,
-      imageTextLanguage,
-      imageModel: resolveImageModelByQualityMode(qualityMode, settings),
-      textModel: settings.defaultTextModel,
-      apiKey: settings.apiKey,
-    };
-
-    const formData = new FormData();
-    formData.set("payload", JSON.stringify(requestPayload));
-    productImages.forEach((file) => formData.append("productImages[]", file));
-    referenceImages.forEach((file) => formData.append("referenceImages[]", file));
-    sourceImages.forEach((file) => formData.append("sourceImages[]", file));
-    modelImages.forEach((file) => formData.append("modelImages[]", file));
-    innerLayerImages.forEach((file) => formData.append("innerLayerImages[]", file));
-
-    setResult(null);
-    setGenerationTotals(null);
-    setLightboxIndex(null);
-    setIsGenerating(true);
-    setRequestError(null);
-
-    try {
-      const response = await fetch("/api/generate", {
-        method: "POST",
-        headers: {
-          "x-response-mode": "stream",
-        },
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | (GenerateStudioResponse & GenerateErrorPayload)
-          | null;
-        throw new Error(payload?.error ?? "生成失败");
-      }
-
-      let completedJob: StudioJobResult | null = null;
-
-      await readStreamEvents(response, async (event) => {
-        if (event.type === "started") {
-          setGenerationTotals(event.totals);
-          setResult({
-            ...event.job,
-            prompt: "",
-            notes: "",
-            images: [],
-            copyResults: [],
-          });
-          return;
-        }
-
-        if (event.type === "analysis") {
-          setGenerationTotals(event.totals);
-          setResult((current) =>
-            current
-              ? {
-                  ...current,
-                  prompt: event.prompt,
-                  notes: appendNoteSection(current.notes, event.notes),
-                }
-              : current,
-          );
-          return;
-        }
-
-        if (event.type === "image") {
-          setGenerationTotals(event.totals);
-          setResult((current) =>
-            current
-              ? {
-                  ...current,
-                  notes: appendNoteSection(current.notes, event.notesDelta),
-                  images: [...current.images, event.image],
-                }
-              : current,
-          );
-          return;
-        }
-
-        if (event.type === "copy") {
-          setGenerationTotals(event.totals);
-          setResult((current) =>
-            current
-              ? {
-                  ...current,
-                  copyResults: [...(current.copyResults ?? []), event.copyResult],
-                }
-              : current,
-          );
-          return;
-        }
-
-        if (event.type === "complete") {
-          completedJob = event.job;
-          setGenerationTotals(event.totals);
-          setResult(event.job);
-          return;
-        }
-
-        throw new Error(event.error);
-      });
-
-      if (!completedJob) {
-        throw new Error("生成未正常完成，请稍后重试。");
-      }
-
-      await persistResult(completedJob);
-      toast.success("生成完成，记得尽快下载结果图。");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "生成失败";
-      setRequestError(message);
-      toast.error(message);
-    } finally {
-      setIsGenerating(false);
-    }
-  }
-  void handleGenerate;
-
-  async function handleGenerateSafe() {
-    if (!validateBeforeGenerate()) {
-      return;
-    }
-
-    const requestPayload = {
-        module: activeModule,
-      baseUrl: settings.apiBaseUrl,
-      workflowMode,
-      prompt,
-      extraNotes,
-      productFacts,
-      platform,
-      aspectRatio,
-      imageSize,
-      count: activeModule === "detail" ? 1 : count,
-      batchCount,
-      tone,
-      garmentCategory,
-      detailFocusIds,
-      imageTextLanguage,
-      imageModel: resolveImageModelByQualityMode(qualityMode, settings),
-      textModel: settings.defaultTextModel,
-      apiKey: settings.apiKey,
-    };
-
-    const formData = new FormData();
-    formData.set("payload", JSON.stringify(requestPayload));
-    productImages.forEach((file) => formData.append("productImages[]", file));
-    referenceImages.forEach((file) => formData.append("referenceImages[]", file));
-    sourceImages.forEach((file) => formData.append("sourceImages[]", file));
-    modelImages.forEach((file) => formData.append("modelImages[]", file));
-    innerLayerImages.forEach((file) => formData.append("innerLayerImages[]", file));
-
-    setResult(null);
-    setGenerationTotals(null);
-    setLightboxIndex(null);
-    setIsGenerating(true);
-    setRequestError(null);
-
-    try {
-      let completedJob: StudioJobResult | null = null;
-      let serverSideError: Error | null = null;
 
       try {
-        const streamResponse = await fetch("/api/generate", {
+        await fetch("/api/sync/jobs", {
           method: "POST",
           headers: {
-            "x-response-mode": "stream",
+            "Content-Type": "application/json",
           },
-          body: formData,
+          body: JSON.stringify({
+            id: job.id,
+            module: job.module,
+            title: job.title,
+            status: job.status,
+            prompt: job.prompt,
+            aspectRatio: job.aspectRatio,
+            imageSize: job.imageSize,
+            platform: job.platform,
+            resultCount: job.outputAssetIds.length,
+            notes: job.notes,
+          }),
         });
+      } catch {
+        toast.message("本地已保存，云端元数据可稍后再次同步。");
+      }
+    },
+    [settings.syncToCloud, isConfigured, user],
+  );
 
-        if (!streamResponse.ok) {
-          const payload = (await streamResponse.json().catch(() => null)) as
-            | (GenerateStudioResponse & GenerateErrorPayload)
-            | null;
-          throw new Error(payload?.error ?? "生成失败");
-        }
+  const persistSnapshotResult = useCallback(
+    async (job: GenerateStudioResponse["job"], snapshot: StudioGenerationSnapshot) => {
+      const inputAssetRecords = [
+        ...createInputAssetRecords(snapshot.productImages, "product", job.createdAt),
+        ...createInputAssetRecords(snapshot.referenceImages, "reference", job.createdAt),
+        ...createInputAssetRecords(snapshot.sourceImages, "source", job.createdAt),
+        ...createInputAssetRecords(snapshot.modelImages, "model", job.createdAt),
+        ...createInputAssetRecords(snapshot.innerLayerImages, "inner", job.createdAt),
+      ];
 
-        await readStreamEvents(streamResponse, async (event) => {
-          if (event.type === "started") {
-            setGenerationTotals(event.totals);
-            setResult({
-              ...event.job,
-              prompt: "",
-              notes: "",
-              images: [],
-              copyResults: [],
-            });
-            return;
-          }
+      const outputAssetRecords: LocalAssetRecord[] = job.images.map((image, index) => {
+        const blob = base64ToBlob(image.base64Data, image.mimeType);
 
-          if (event.type === "analysis") {
-            setGenerationTotals(event.totals);
-            setResult((current) =>
-              current
-                ? {
-                    ...current,
-                    prompt: event.prompt,
-                    notes: appendNoteSection(current.notes, event.notes),
-                  }
-                : current,
-            );
-            return;
-          }
-
-          if (event.type === "image") {
-            setGenerationTotals(event.totals);
-            setResult((current) =>
-              current
-                ? {
-                    ...current,
-                    notes: appendNoteSection(current.notes, event.notesDelta),
-                    images: [...current.images, event.image],
-                  }
-                : current,
-            );
-            return;
-          }
-
-          if (event.type === "copy") {
-            setGenerationTotals(event.totals);
-            setResult((current) =>
-              current
-                ? {
-                    ...current,
-                    copyResults: [...(current.copyResults ?? []), event.copyResult],
-                  }
-                : current,
-            );
-            return;
-          }
-
-          if (event.type === "complete") {
-            completedJob = event.job;
-            setGenerationTotals(event.totals);
-            setResult(event.job);
-            return;
-          }
-
-          serverSideError = new Error(event.error);
-          throw serverSideError;
-        });
-      } catch (streamError) {
-        if (serverSideError) {
-          throw serverSideError;
-        }
-
-        setResult(null);
-        setGenerationTotals(null);
-        toast.message("流式响应被服务器或反向代理截断，已自动切换为普通模式。");
-
-        const fallbackResponse = await fetch("/api/generate", {
-          method: "POST",
-          body: formData,
-        });
-
-        const fallbackPayload = (await fallbackResponse.json()) as GenerateStudioResponse & {
-          error?: string;
-          requestId?: string;
-          details?: string;
+        return {
+          id: image.id,
+          kind: "output",
+          name: `${job.title}-${index + 1}.png`,
+          mimeType: image.mimeType,
+          size: blob.size,
+          blob,
+          createdAt: job.createdAt,
+          caption: image.caption,
+          description: image.description,
         };
+      });
 
-        if (!fallbackResponse.ok || !fallbackPayload.ok) {
-          throw new Error(
-            fallbackPayload.error ??
-              (streamError instanceof Error ? streamError.message : "鐢熸垚澶辫触"),
-          );
+      const jobRecord: LocalJobRecord = {
+        id: job.id,
+        module: snapshot.module,
+        title: job.title,
+        status: "completed",
+        prompt: snapshot.prompt,
+        extraNotes: snapshot.extraNotes,
+        productFacts: snapshot.productFacts,
+        tone: snapshot.tone,
+        garmentCategory: snapshot.garmentCategory,
+        workflowMode: snapshot.workflowMode,
+        detailFocusIds: snapshot.detailFocusIds,
+        aspectRatio: snapshot.aspectRatio,
+        imageSize: snapshot.imageSize,
+        platform: snapshot.platform,
+        imageCount: expectedImageCountFromSnapshot(snapshot),
+        batchCount: snapshot.batchCount,
+        qualityMode: snapshot.qualityMode,
+        imageTextLanguage: snapshot.imageTextLanguage,
+        inputAssetIds: inputAssetRecords.map((asset) => asset.id),
+        outputAssetIds: outputAssetRecords.map((asset) => asset.id),
+        notes: job.notes,
+        textResults: job.copyResults,
+        createdAt: job.createdAt,
+        updatedAt: job.createdAt,
+      };
+
+      const allAssets = [...inputAssetRecords, ...outputAssetRecords];
+
+      if (allAssets.length > 0) {
+        await saveAssets(allAssets);
+      }
+      await saveJob(jobRecord);
+      await syncJobToSupabase(jobRecord);
+    },
+    [syncJobToSupabase],
+  );
+
+  useEffect(() => {
+    runGenerationTaskRef.current = (task: StudioGenerationTask) => {
+      const { id, snapshot } = task;
+
+      const patch = (fn: (t: StudioGenerationTask) => StudioGenerationTask) => {
+        setTasks((prev) => {
+          if (!prev.some((t) => t.id === id)) {
+            return prev;
+          }
+          return prev.map((t) => (t.id === id ? fn(t) : t));
+        });
+      };
+
+      void (async () => {
+        try {
+          const formData = buildGenerateFormData(snapshot);
+          let completedJob: StudioJobResult | null = null;
+          let serverSideError: Error | null = null;
+
+          try {
+            const streamResponse = await fetch("/api/generate", {
+              method: "POST",
+              headers: {
+                "x-response-mode": "stream",
+              },
+              body: formData,
+              signal: AbortSignal.timeout(10 * 60 * 1000),
+            });
+
+            if (!streamResponse.ok) {
+              const payload = (await streamResponse.json().catch(() => null)) as
+                | (GenerateStudioResponse & GenerateErrorPayload)
+                | null;
+              throw new Error(payload?.error ?? "生成失败");
+            }
+
+            await readStreamEvents(streamResponse, async (event) => {
+              if (event.type === "started") {
+                patch((t) => ({
+                  ...t,
+                  generationTotals: event.totals,
+                  result: {
+                    ...event.job,
+                    prompt: "",
+                    notes: "",
+                    images: [],
+                    copyResults: [],
+                  },
+                }));
+                return;
+              }
+
+              if (event.type === "analysis") {
+                patch((t) =>
+                  t.result
+                    ? {
+                        ...t,
+                        generationTotals: event.totals,
+                        result: {
+                          ...t.result,
+                          prompt: event.prompt,
+                          notes: appendNoteSection(t.result.notes, event.notes),
+                        },
+                      }
+                    : t,
+                );
+                return;
+              }
+
+              if (event.type === "image") {
+                patch((t) =>
+                  t.result
+                    ? {
+                        ...t,
+                        generationTotals: event.totals,
+                        result: {
+                          ...t.result,
+                          notes: appendNoteSection(t.result.notes, event.notesDelta),
+                          images: [...t.result.images, event.image],
+                        },
+                      }
+                    : t,
+                );
+                return;
+              }
+
+              if (event.type === "copy") {
+                patch((t) =>
+                  t.result
+                    ? {
+                        ...t,
+                        generationTotals: event.totals,
+                        result: {
+                          ...t.result,
+                          copyResults: [...(t.result.copyResults ?? []), event.copyResult],
+                        },
+                      }
+                    : t,
+                );
+                return;
+              }
+
+              if (event.type === "complete") {
+                completedJob = event.job;
+                patch((t) => ({
+                  ...t,
+                  generationTotals: event.totals,
+                  result: event.job,
+                }));
+                return;
+              }
+
+              serverSideError = new Error(event.error);
+              throw serverSideError;
+            });
+          } catch (streamError) {
+            if (serverSideError) {
+              throw serverSideError;
+            }
+
+            patch((t) => ({
+              ...t,
+              generationTotals: null,
+              result: null,
+            }));
+            toast.message("流式响应被服务器或反向代理截断，已自动切换为普通模式。");
+
+            const fallbackResponse = await fetch("/api/generate", {
+              method: "POST",
+              body: formData,
+              signal: AbortSignal.timeout(10 * 60 * 1000),
+            });
+
+            const fallbackPayload = (await fallbackResponse.json()) as GenerateStudioResponse & {
+              error?: string;
+              requestId?: string;
+              details?: string;
+            };
+
+            if (!fallbackResponse.ok || !fallbackPayload.ok) {
+              throw new Error(
+                fallbackPayload.error ??
+                  (streamError instanceof Error ? streamError.message : "生成失败"),
+              );
+            }
+
+            completedJob = fallbackPayload.job;
+            patch((t) => ({
+              ...t,
+              result: fallbackPayload.job,
+            }));
+          }
+
+          if (!completedJob) {
+            throw new Error("生成未正常完成，请稍后重试。");
+          }
+
+          await persistSnapshotResult(completedJob, snapshot);
+
+          setTasks((prev) => {
+            if (!prev.some((t) => t.id === id)) {
+              return prev;
+            }
+            const next = prev.map((t) =>
+              t.id === id
+                ? { ...t, status: "completed" as const, result: completedJob!, error: null }
+                : t,
+            );
+            const { next: drained, starters } = drainGenerationQueue(
+              next,
+              startedTaskIdsRef.current,
+            );
+            queueMicrotask(() => starters.forEach((s) => runGenerationTaskRef.current(s)));
+            return drained;
+          });
+          toast.success("生成完成，记得尽快下载结果图。");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "生成失败";
+          setTasks((prev) => {
+            if (!prev.some((t) => t.id === id)) {
+              return prev;
+            }
+            const next = prev.map((t) =>
+              t.id === id ? { ...t, status: "failed" as const, error: message } : t,
+            );
+            const { next: drained, starters } = drainGenerationQueue(
+              next,
+              startedTaskIdsRef.current,
+            );
+            queueMicrotask(() => starters.forEach((s) => runGenerationTaskRef.current(s)));
+            return drained;
+          });
+          toast.error(message);
         }
+      })();
+    };
+  }, [persistSnapshotResult]);
 
-        completedJob = fallbackPayload.job;
-        setResult(fallbackPayload.job);
-      }
-
-      if (!completedJob) {
-        throw new Error("生成未正常完成，请稍后重试。");
-      }
-
-      await persistResult(completedJob);
-      toast.success("生成完成，记得尽快下载结果图。");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "生成失败";
-      setRequestError(message);
-      toast.error(message);
-    } finally {
-      setIsGenerating(false);
-    }
+  function captureGenerationSnapshot(): StudioGenerationSnapshot {
+    return {
+      module: activeModule,
+      workflowMode,
+      prompt,
+      extraNotes,
+      productFacts,
+      tone,
+      garmentCategory,
+      detailFocusIds: [...detailFocusIds],
+      platform,
+      aspectRatio,
+      imageSize,
+      count,
+      batchCount,
+      imageTextLanguage,
+      qualityMode,
+      imageModel: resolveImageModelByQualityMode(qualityMode, settings),
+      textModel: settings.defaultTextModel,
+      apiBaseUrl: settings.apiBaseUrl,
+      apiKey: settings.apiKey,
+      productImages: [...productImages],
+      referenceImages: [...referenceImages],
+      sourceImages: [...sourceImages],
+      modelImages: [...modelImages],
+      innerLayerImages: [...innerLayerImages],
+    };
   }
 
-  void handleGenerateStream;
-
-  async function handleDownloadAll() {
-    if (!deferredResult?.images.length) {
-      toast.error("当前没有可下载的图片。");
+  function handleGenerateSafe() {
+    if (!validateBeforeGenerate()) {
       return;
     }
 
-    const assets: LocalAssetRecord[] = deferredResult.images.map((image, index) => ({
-      id: image.id,
-      kind: "output",
-      name: `${deferredResult.title}-${index + 1}.png`,
-      mimeType: image.mimeType,
-      size: image.base64Data.length,
-      blob: base64ToBlob(image.base64Data, image.mimeType),
-      createdAt: deferredResult.createdAt,
-      caption: image.caption,
-      description: image.description,
-    }));
+    const snapshot = captureGenerationSnapshot();
+    const newTask: StudioGenerationTask = {
+      id: crypto.randomUUID(),
+      status: "queued",
+      snapshot,
+      result: null,
+      generationTotals: null,
+      error: null,
+      createdAt: Date.now(),
+    };
 
-    await downloadAssetBundle({
-      title: deferredResult.title,
-      assets,
+    setTasks((prev) => {
+      const withNew = [...prev, newTask];
+      const { next, starters } = drainGenerationQueue(withNew, startedTaskIdsRef.current);
+      queueMicrotask(() => starters.forEach((s) => runGenerationTaskRef.current(s)));
+      return next;
     });
-  }
 
-  function handleDownloadCopyBundle(format: "txt" | "json") {
-    if (!deferredResult?.copyResults?.length) {
-      toast.error("当前没有可导出的文案结果。");
-      return;
-    }
-
-    if (format === "json") {
-      downloadBlob(
-        new Blob([buildCopyJsonBundle(deferredResult.title, deferredResult.copyResults)], {
-          type: "application/json;charset=utf-8",
-        }),
-        `${deferredResult.title}-文案包.json`,
-      );
-      return;
-    }
-
-    downloadBlob(
-      new Blob([buildCopyTextBundle(deferredResult.title, deferredResult.copyResults)], {
-        type: "text/plain;charset=utf-8",
-      }),
-      `${deferredResult.title}-文案包.txt`,
-    );
+    setIsButtonCooldown(true);
+    setTimeout(() => setIsButtonCooldown(false), 1500);
   }
 
   const uploadHint =
@@ -1133,18 +965,6 @@ function applyTemplate(template: string) {
           )}
         >
           {restoreNotice.message}
-        </section>
-      ) : null}
-
-      {requestError ? (
-        <section className="rounded-[26px] border border-[#efc2c2] bg-[#fff3f1] px-5 py-4 text-sm leading-7 text-[#8b2f2f]">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="mt-1 size-4 shrink-0" />
-            <div className="whitespace-pre-wrap break-words">
-              <p className="font-medium">本次生成失败</p>
-              <p className="mt-1">{requestError}</p>
-            </div>
-          </div>
         </section>
       ) : null}
 
@@ -1527,13 +1347,13 @@ function applyTemplate(template: string) {
             <button
               type="button"
               onClick={handleGenerateSafe}
-              disabled={isGenerating}
+              disabled={isButtonCooldown}
               className="inline-flex items-center justify-center gap-3 rounded-full bg-[#17120d] px-6 py-4 text-sm font-medium text-[#f9f5ea] transition-opacity hover:opacity-92 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isGenerating ? (
+              {isButtonCooldown ? (
                 <>
                   <LoaderCircle className="h-4 w-4 animate-spin" />
-                  正在生成...
+                  请稍候...
                 </>
               ) : (
                 <>
@@ -1545,8 +1365,7 @@ function applyTemplate(template: string) {
             <button
               type="button"
               onClick={handleResetWorkspace}
-              disabled={isGenerating}
-              className="inline-flex items-center justify-center gap-3 rounded-full border border-black/10 bg-white px-6 py-4 text-sm font-medium text-[#4b4030] transition-colors hover:bg-[#f8f1e3] disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center justify-center gap-3 rounded-full border border-black/10 bg-white px-6 py-4 text-sm font-medium text-[#4b4030] transition-colors hover:bg-[#f8f1e3]"
             >
               <RotateCcw className="h-4 w-4" />
               清空当前工作台
@@ -1559,132 +1378,34 @@ function applyTemplate(template: string) {
 
         <section className="studio-card min-h-[760px] rounded-[32px] p-5 sm:p-6">
           <div className="flex flex-col gap-3 border-b border-black/6 pb-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-semibold text-[#17120d]">生成结果</p>
-                <p className="mt-1 text-xs leading-5 text-[#7b6b56]">
-                  图片支持点击放大，建议在结果区直接下载或批量打包下载。
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {deferredResult?.images.length ? (
-                  <button
-                    type="button"
-                    onClick={handleDownloadAll}
-                    className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
-                  >
-                    <Download className="h-4 w-4" />
-                    下载全部
-                  </button>
-                ) : null}
-                {deferredResult?.copyResults?.length ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        copyTextToClipboard(
-                          buildCopyTextBundle(
-                            deferredResult.title,
-                            deferredResult.copyResults ?? [],
-                          ),
-                          "文案包已复制到剪贴板。",
-                        )
-                      }
-                      className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
-                    >
-                      <Copy className="h-4 w-4" />
-                      复制文案包
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadCopyBundle("txt")}
-                      className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
-                    >
-                      <FileText className="h-4 w-4" />
-                      下载 TXT
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDownloadCopyBundle("json")}
-                      className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-white px-4 py-2 text-sm font-medium text-[#3b3226] hover:bg-[#f7efe0]"
-                    >
-                      <FileJson2 className="h-4 w-4" />
-                      下载 JSON
-                    </button>
-                  </>
-                ) : null}
-              </div>
+            <div>
+              <p className="text-sm font-semibold text-[#17120d]">生成任务</p>
+              <p className="mt-1 text-xs leading-5 text-[#7b6b56]">
+                每次点击「开始生成」都会排队执行；最多同时运行 {MAX_CONCURRENT_GENERATIONS}{" "}
+                个任务。参数与文件在入队时冻结，之后修改左侧表单不会影响已排队任务。
+              </p>
             </div>
-
-            {deferredResult ? (
-              <div className="grid gap-3 md:grid-cols-3">
-                {resultMetrics.map((metric) => (
-                  <div
-                    key={metric.label}
-                    className="rounded-[22px] border border-black/8 bg-[#faf7f1] px-4 py-4"
-                  >
-                    <p className="text-xs uppercase tracking-[0.18em] text-[#9b8970]">
-                      {metric.label}
-                    </p>
-                    <p className="mt-2 text-lg font-semibold text-[#17120d]">
-                      {metric.value}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-
-            {isGenerating && generationStatusText ? (
-              <div className="rounded-[22px] border border-[#ead8a7] bg-[#fdf5df] px-4 py-3 text-sm text-[#7b6328]">
-                当前正在分批回传结果：{generationStatusText}
+            {tasks.length ? (
+              <div className="flex flex-wrap gap-2 text-xs text-[#7b6b56]">
+                <span>
+                  排队：{tasks.filter((t) => t.status === "queued").length} · 进行中：
+                  {tasks.filter((t) => t.status === "running").length} · 完成：
+                  {tasks.filter((t) => t.status === "completed").length} · 失败：
+                  {tasks.filter((t) => t.status === "failed").length}
+                </span>
               </div>
             ) : null}
           </div>
 
-          {!deferredResult && isGenerating ? (
-            <div className="flex min-h-[620px] flex-col items-center justify-center text-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[#f3ebdb] text-[#a88a43]">
-                <LoaderCircle className="h-7 w-7 animate-spin" />
-              </div>
-              <h2 className="mt-6 text-xl font-semibold text-[#17120d]">
-                正在生成结果
-              </h2>
-              <p className="mt-3 max-w-md text-sm leading-7 text-[#6f604c]">
-                系统会保留当前输入参数，生成成功后自动写入本地历史。请不要关闭页面。
-              </p>
-            </div>
-          ) : deferredResult ? (
-            <div className="pt-5">
-              <div className="mb-5 rounded-[24px] border border-[#ead8a7] bg-[#fdf5df] px-4 py-4 text-sm leading-7 text-[#7b6328]">
-                {deferredResult.images.length
-                  ? "请立即下载生成结果。当前阶段图片仅保存在浏览器本地缓存中，清理缓存或更换设备后可能无法恢复。"
-                  : "当前模式主要输出文案与视频预备内容。若需要图片，请切回图文带货模式。"}
-              </div>
-
-              {deferredResult.notes ? (
-                <div className="mb-5 rounded-[24px] border border-black/8 bg-white px-4 py-4">
-                  <p className="text-sm font-semibold text-[#17120d]">系统分析与隐藏提示词摘要</p>
-                  <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[#5a4c39]">
-                    {deferredResult.notes}
-                  </p>
-                </div>
-              ) : null}
-
-              <ResultImageGrid
-                images={displayImages}
-                title={deferredResult.title}
-                onPreview={setLightboxIndex}
-              />
-
-              <CopyResultsSection
-                copyResults={deferredResult.copyResults ?? []}
-                onCopy={(copyItem) =>
-                  copyTextToClipboard(
-                    buildCopyTextBundle(copyItem.title, [copyItem]),
-                    "单条文案已复制到剪贴板。",
-                  )
-                }
-              />
+          {tasks.length ? (
+            <div className="mt-5 flex flex-col gap-5">
+              {[...tasks].reverse().map((task) => (
+                <StudioGenerationTaskCard
+                  key={task.id}
+                  task={task}
+                  onCopyText={copyTextToClipboard}
+                />
+              ))}
             </div>
           ) : (
             <div className="space-y-6 pt-5">
@@ -1693,7 +1414,7 @@ function applyTemplate(template: string) {
                   从这里开始你的商品创意生成
                 </h2>
                 <p className="mt-3 max-w-2xl text-sm leading-7 text-[#6f604c]">
-                  上传素材、填写提示词并点击生成。当前版本不做套餐和积分展示，先把每个工作台的生成逻辑做完整。
+                  上传素材、填写提示词并点击生成。可同时排队多个任务；结果会出现在此列表中（最新在上）。
                 </p>
                 <div className="mt-4 flex flex-wrap gap-3">
                   <div className="inline-flex items-center gap-2 rounded-full border border-black/8 bg-[#faf7f1] px-4 py-2 text-sm text-[#5c4e3b]">
@@ -1725,12 +1446,6 @@ function applyTemplate(template: string) {
           )}
         </section>
       </div>
-
-      <ImageLightbox
-        images={displayImages}
-        openIndex={lightboxIndex}
-        onOpenIndexChange={setLightboxIndex}
-      />
     </div>
   );
 }

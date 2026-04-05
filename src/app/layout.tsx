@@ -6,7 +6,7 @@ import { AppProviders } from "@/components/providers/app-providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "NNB | Ecommerce AI Studio",
+  title: "缔图 | Ecommerce AI Studio",
   description: "Gemini-first ecommerce creative workstation for product images, fashion try-on and commerce content.",
 };
 

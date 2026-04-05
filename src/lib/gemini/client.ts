@@ -727,13 +727,36 @@ async function generateSingleImagePlan({
 
 async function generateSingleCopyResult({
   payload,
+  productImages,
   variantIndex,
   trace,
 }: {
   payload: GenerationPayload;
+  productImages: File[];
   variantIndex: number;
   trace?: GeminiTraceContext;
 }) {
+  const contents = [
+    createTextPart(
+      buildCommerceCopyPrompt({
+        platform: payload.platform,
+        tone: payload.tone,
+        productFacts: payload.productFacts,
+        prompt: payload.prompt,
+        variantIndex,
+        workflowMode: payload.workflowMode,
+        hasImages: productImages.length > 0,
+      }),
+    ),
+  ];
+
+  if (productImages.length > 0) {
+    const imageParts = await Promise.all(
+      productImages.slice(0, 3).map((file) => fileToInlinePart(file)),
+    );
+    contents.push(...imageParts);
+  }
+
   const copyResponse = await geminiGenerateContent({
     baseUrl: payload.baseUrl,
     apiKey: payload.apiKey,
@@ -743,20 +766,7 @@ async function generateSingleCopyResult({
       operation: "commerce-copy",
     },
     body: {
-      contents: [
-        createUserContent([
-          createTextPart(
-            buildCommerceCopyPrompt({
-              platform: payload.platform,
-              tone: payload.tone,
-              productFacts: payload.productFacts,
-              prompt: payload.prompt,
-              variantIndex,
-              workflowMode: payload.workflowMode,
-            }),
-          ),
-        ]),
-      ],
+      contents: [createUserContent(contents)],
       generationConfig: {
         responseMimeType: "application/json",
         responseJsonSchema: commerceCopySchema,
@@ -949,6 +959,7 @@ export async function generateStudioAssets({
         copyLimit(async () => {
           const copyResult = await generateSingleCopyResult({
             payload,
+            productImages,
             variantIndex: index + 1,
             trace,
           });

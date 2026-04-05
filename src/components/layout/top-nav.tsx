@@ -41,12 +41,7 @@ export function TopNav() {
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[#17120d] text-[#f7e7b2]">
               <GalleryVerticalEnd className="h-4 w-4" />
             </span>
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.28em] text-[#9f8f74]">NNB</p>
-              <p className="font-semibold tracking-tight text-[#17120d]">
-                Ecommerce AI Studio
-              </p>
-            </div>
+            <p className="text-lg font-bold tracking-widest text-[#17120d]">缔图</p>
           </Link>
 
           <div className="flex items-center gap-2">

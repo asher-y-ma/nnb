@@ -322,6 +322,7 @@ export function buildCommerceCopyPrompt({
   prompt,
   variantIndex,
   workflowMode,
+  hasImages,
 }: {
   platform: PlatformTarget;
   tone: string;
@@ -329,9 +330,11 @@ export function buildCommerceCopyPrompt({
   prompt?: string;
   variantIndex: number;
   workflowMode?: string;
+  hasImages?: boolean;
 }) {
   return [
     `你是一名资深中文电商带货策划，现在为 ${platform} 生成第 ${variantIndex} 套带货内容。`,
+    hasImages ? "请仔细观察我发给你的商品图片，结合图片里的商品外观、包装、使用场景和细节来撰写文案，让文案与图片高度契合。" : "",
     `语气要求：${tone}。`,
     workflowMode ? `工作模式：${workflowMode}。` : "",
     `平台提示：${COMMERCE_PLATFORM_GUIDES[platform]}`,
