@@ -736,7 +736,7 @@ async function generateSingleCopyResult({
   variantIndex: number;
   trace?: GeminiTraceContext;
 }) {
-  const contents = [
+  const contents: GeminiRequestPart[] = [
     createTextPart(
       buildCommerceCopyPrompt({
         platform: payload.platform,
